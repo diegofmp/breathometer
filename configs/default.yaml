@@ -1,0 +1,149 @@
+# Bird Breathing Analysis - Configuration
+
+# Detection
+detection:
+  model: 'yolov8n-seg.pt'  # Options: yolov8n, yolov8s, yolov8m, yolov8l, yolov8x
+  confidence_threshold: 0.5
+  device: 'auto'  # auto, cpu, cuda
+
+  # Inner hand bbox extraction (focuses on bird region, avoiding fingers/edges)
+  use_inner_bbox: true  # Use inner hand region instead of full hand bbox
+  inner_bbox_method: 'percentile'  # Options: percentile, erosion, contour
+  inner_bbox_margin: 0.15  # For 'percentile' method: crop margin ratio (0.15 = 15%)
+  inner_bbox_erosion: 3  # For 'erosion'/'contour' methods: erosion iterations
+
+# Segmentation
+segmentation:
+  enabled: true  # Set to false to skip bird segmentation and use hand mask directly for chest localization
+  method: 'grabcut'  # Options: color, grabcut, skin_inverse
+
+  # GrabCut parameters
+  grabcut_iterations: 8  # Number of GrabCut iterations (more = better but slower)
+  grabcut_rect_margin: 0.15  # Initial rectangle margin (smaller = more aggressive, larger = more conservative)
+
+  color_range:
+    # HSV ranges for different bird colors (adjust per bird)
+    green: [[35, 40, 40], [85, 255, 255]]
+    blue: [[90, 50, 50], [130, 255, 255]]
+    yellow: [[20, 100, 100], [35, 255, 255]]
+    default: 'green'
+
+# Chest Localization
+localization:
+  method: 'optical_flow'  # Options: simple, contour, motion, variance, optical_flow
+
+  # ROI Size Configuration (applies to all methods)
+  roi_size:
+    width_ratio: 0.90    # ROI width as fraction of bird width (0.70 = 70%)
+    height_ratio: 0.70   # ROI height as fraction of bird height (0.55 = 55%)
+    min_width: 20        # Minimum ROI width in pixels
+    min_height: 10       # Minimum ROI height in pixels
+
+  # Simple anatomical ratios (for 'simple' method)
+  simple_ratios:
+    y_start: 0.25  # 25% from top (was 0.35)
+    y_end: 0.80    # 80% from top (was 0.70)
+    x_margin: 0.15 # 15% from left (was 0.25)
+    width: 0.70    # 70% of bird width (was 0.50)
+
+  # Contour analysis settings (for 'contour' method)
+  contour:
+    width_ratio: 0.70   # ROI width as fraction of bird width
+    height_ratio: 0.55  # ROI height as fraction of bird height
+    x_margin: 0.15      # Horizontal margin from bird edges
+    scan_range: [0.15, 0.85]  # Vertical range to scan for widest part [start, end]
+
+  # Variance-based settings (for 'variance' method)
+  variance:
+    buffer_frames: 30   # Frames to collect for variance analysis
+    grid_size: 4        # Divide bird into NxN grid
+    roi_cells: 3        # ROI spans this many grid cells (3x3 = 75% of 4x4 grid)
+
+  # Motion-based settings (for 'motion' and 'optical_flow' methods)
+  motion:
+    buffer_frames: 30   # 0.5 seconds at 30fps (reduced from 60 for speed)
+    grid_size: 8        # Divide bird into NxN grid
+    roi_cells: 6        # ROI spans this many grid cells (3x3 = 60% of 5x5 grid)
+    freq_range: [0.5, 4.0]  # Hz (30-240 BPM) - for optical_flow method
+
+# Tracking
+tracking:
+  hand_tracker: 'KCF'     # Options: CSRT, KCF, MIL, MedianFlow
+  chest_tracker: 'KCF'     # Options: KCF, CSRT, MIL
+  redetect_interval: 100    # Frames between re-detection
+  start_frame: 150           # Frame to start processing (skip initial camera stabilization)
+  max_frames: null         # Maximum frames to process (null = process all)
+
+# Stabilization
+stabilization:
+  enabled: false
+  method: 'tracker_position'  # Options: none, tracker_position, optical_flow, optical_flow_masked
+
+# Measurement
+measurement:
+  method: 'optical_flow_divergence'  # Options: intensity, optical_flow, optical_flow_divergence, phase, template
+
+# Signal Processing
+signal_processing:
+  fps: 30  # Will be auto-detected from video
+
+  # Preprocessing (applied to raw signal before bandpass filter)
+  preprocessing:
+    # Moving average smoothing (reduces high-frequency noise)
+    moving_average:
+      enabled: true
+      window_size: 5  # Frames (5 = ~0.17s at 30fps)
+
+    # Savitzky-Golay filter (preserves peaks better than moving average)
+    savgol:
+      enabled: false  # Disable by default (use moving_average OR savgol, not both)
+      window_size: 11  # Must be odd number
+      polyorder: 3     # Polynomial order (lower = more smoothing)
+
+    # Detrending (removes slow baseline drift)
+    detrend:
+      enabled: true
+      method: 'linear'  # Options: linear, constant
+
+    # Normalization (scales signal to consistent range)
+    normalize:
+      enabled: true
+      method: 'zscore'  # Options: zscore, minmax, robust
+
+  # Bandpass filter (main frequency filtering)
+  bandpass_filter:
+    low_freq: 0.5   # Hz (30 BPM)
+    #high_freq: 4.0  # Hz (240 BPM)
+    high_freq: 6.0  # Hz (360 BPM)
+    order: 4
+
+  # Real-time breath counting parameters
+  breath_counting:
+    min_signal_length: 60  # Minimum frames before attempting detection (1 second at 30fps)
+    peak_prominence_ratio: 0.20  # Peak must be 20% of signal range above baseline
+    max_breathing_rate_bpm: 360  # Maximum physiological rate (sets min distance between peaks)
+    peak_height_threshold_ratio: 0.10  # Peak must be 10% of range above mean signal
+
+# Visualization
+visualization:
+  show_detections: true
+  show_tracking: true
+  save_frames: false
+  output_dir: 'data/results'
+
+# Presets
+presets:
+  quick:
+    localization: {method: 'simple'}
+    stabilization: {enabled: false}
+    measurement: {method: 'intensity'}
+  
+  balanced:
+    localization: {method: 'simple'}
+    stabilization: {enabled: true, method: 'tracker_position'}
+    measurement: {method: 'optical_flow'}
+  
+  accurate:
+    localization: {method: 'motion'}
+    stabilization: {enabled: true, method: 'optical_flow_masked'}
+    measurement: {method: 'optical_flow_divergence'}
