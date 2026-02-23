@@ -2,35 +2,55 @@
 
 # Detection
 detection:
-  model: 'yolov8n-seg.pt'  # Options: yolov8n, yolov8s, yolov8m, yolov8l, yolov8x
-  confidence_threshold: 0.5
+  mode: 'rfdetr'  # Options: manual (prompt manual ROI); or using automatic segmentators:  'auto' (YOLO), 'rfdetr'
+
+  # YOLO detection settings (used when mode='auto')
+  # When mode='rfdetr', set model to the RF-DETR weights path (e.g. 'rfdetr-base.pt')
+  #model: 'yolov8n-seg.pt'  # Options: yolov8n, yolov8s, yolov8m, yolov8l, yolov8x
+  #model: 'rfdetr-base.pt'  # Options: yolov8n, yolov8s, yolov8m, yolov8l, yolov8x
+  
+  confidence_threshold: 0.3
   device: 'auto'  # auto, cpu, cuda
 
-  # Inner hand bbox extraction (focuses on bird region, avoiding fingers/edges)
-  use_inner_bbox: true  # Use inner hand region instead of full hand bbox
-  inner_bbox_method: 'percentile'  # Options: percentile, erosion, contour
-  inner_bbox_margin: 0.15  # For 'percentile' method: crop margin ratio (0.15 = 15%)
-  inner_bbox_erosion: 3  # For 'erosion'/'contour' methods: erosion iterations
+  # RF-DETR detection settings (used when mode='rfdetr')
+  # 'model', 'confidence_threshold', and 'device' above are also used by RF-DETR
+  rfdetr_variant: 'medium'  # Options: nano, small, medium, large, xlarge
+  target_class: 'hand'
 
 # Segmentation
 segmentation:
-  enabled: true  # Set to false to skip bird segmentation and use hand mask directly for chest localization
-  method: 'grabcut'  # Options: color, grabcut, skin_inverse
+  enabled: false  # Set to false to skip bird segmentation and use hand mask directly for chest localization
+  method: 'DL'  # Options: color, grabcut, skin_inverse, dl - if DL, gonna use a MODEL
+  rely_segmentator: true # whether to rely only on the bird masks or use hand mask to clean it
 
-  # GrabCut parameters
-  grabcut_iterations: 8  # Number of GrabCut iterations (more = better but slower)
-  grabcut_rect_margin: 0.15  # Initial rectangle margin (smaller = more aggressive, larger = more conservative)
+  #DL PARAMS
+  #mode: 'yolo'  # Options: auto, manual, rfdetr
+  mode: 'rfdetr'
+  model: "/home/diego/Documents/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"  # Options: yolov8n, yolov8s, yolov8m, yolov8l, yolov8x
 
-  color_range:
-    # HSV ranges for different bird colors (adjust per bird)
-    green: [[35, 40, 40], [85, 255, 255]]
-    blue: [[90, 50, 50], [130, 255, 255]]
-    yellow: [[20, 100, 100], [35, 255, 255]]
-    default: 'green'
+  #detr uses model_path. yolo just "model"
+  model_path: "/home/diego/Documents/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"  # Options: yolov8n, yolov8s, yolov8m, yolov8l, yolov8x
+  target_class: 'bird'
+
+
+  confidence_threshold: 0.2
+  device: 'auto'  # auto, cpu, cuda
 
 # Chest Localization
 localization:
-  method: 'optical_flow'  # Options: simple, contour, motion, variance, optical_flow
+  method: 'custom'  # Options: simple, contour, motion, variance, optical_flow, custom
+
+  debug: false
+  debug_plots: false
+
+  smooth_kernel_size: 21 # Kernel size of Gaussian smoothing of frames
+
+  custom_localizer:
+    use_hull_mask: false
+    priorize_energy: false # Force to avoid hands even if loosing some energy
+    hard_constrain_mode: "energy" # What to focus on when shrinking ROI: ener
+    buffer_frames: 30   # Frames to collect for motion energy analysis
+    hand_mask_buffer_frames: 15 # Frames to collect to aggregate hand mask
 
   # ROI Size Configuration (applies to all methods)
   roi_size:
@@ -39,25 +59,15 @@ localization:
     min_width: 20        # Minimum ROI width in pixels
     min_height: 10       # Minimum ROI height in pixels
 
-  # Simple anatomical ratios (for 'simple' method)
-  simple_ratios:
-    y_start: 0.25  # 25% from top (was 0.35)
-    y_end: 0.80    # 80% from top (was 0.70)
-    x_margin: 0.15 # 15% from left (was 0.25)
-    width: 0.70    # 70% of bird width (was 0.50)
-
-  # Contour analysis settings (for 'contour' method)
-  contour:
-    width_ratio: 0.70   # ROI width as fraction of bird width
-    height_ratio: 0.55  # ROI height as fraction of bird height
-    x_margin: 0.15      # Horizontal margin from bird edges
-    scan_range: [0.15, 0.85]  # Vertical range to scan for widest part [start, end]
-
-  # Variance-based settings (for 'variance' method)
-  variance:
-    buffer_frames: 30   # Frames to collect for variance analysis
-    grid_size: 4        # Divide bird into NxN grid
-    roi_cells: 3        # ROI spans this many grid cells (3x3 = 75% of 4x4 grid)
+  segmentation_enhancement:
+    hsv_hue_min: 0
+    hsv_hue_max: 20
+    hsv_sat_min: 20
+    hsv_val_min: 70
+    ycrcb_cr_min: 133
+    ycrcb_cr_max: 173
+    ycrcb_cb_min: 77
+    ycrcb_cb_max: 127
 
   # Motion-based settings (for 'motion' and 'optical_flow' methods)
   motion:
@@ -70,80 +80,97 @@ localization:
 tracking:
   hand_tracker: 'KCF'     # Options: CSRT, KCF, MIL, MedianFlow
   chest_tracker: 'KCF'     # Options: KCF, CSRT, MIL
-  redetect_interval: 100    # Frames between re-detection
-  start_frame: 150           # Frame to start processing (skip initial camera stabilization)
-  max_frames: null         # Maximum frames to process (null = process all)
-
-# Stabilization
-stabilization:
-  enabled: false
-  method: 'tracker_position'  # Options: none, tracker_position, optical_flow, optical_flow_masked
+  redetect_interval: 0    # Frames between re-detection  (0 if not needed)
+  start_frame: 300           # Frame to start processing (skip initial camera stabilization)
+  max_frames: 1800         # Maximum frames to process (null = process all)
 
 # Measurement
 measurement:
-  method: 'optical_flow_divergence'  # Options: intensity, optical_flow, optical_flow_divergence, phase, template
+  method: 'optical_flow_divergence_robust'  # Options: intensity, optical_flow, optical_flow_divergence, optical_flow_divergence_robust, geometric_distance
+
+  # Optical flow parameters (for optical_flow and optical_flow_divergence methods)
+  pyr_scale: 0.5      # Image pyramid scale (0.5 = 50% reduction per level)
+  levels: 3           # Number of pyramid levels
+  winsize: 15         # Averaging window size
+  iterations: 3       # Iterations at each pyramid level
+  poly_n: 5           # Polynomial expansion neighborhood size
+  poly_sigma: 1.2     # Gaussian sigma for polynomial expansion
+  use_patches: true   # Patch the roi for optical_flow_divergence_robust
+  patch_rows: 3       # Patches to split ROI for optical_flow_divergence_robust
+  patch_cols: 3       # Patches to split ROI for optical_flow_divergence_robust
+  use_median: false    # use median to aggregate divergence, otherwise mean
+
+  # === RADIAL CONSISTENCY VALIDATION ===
+  # Rejects non-breathing motion artifacts (hand movements, repositioning)
+  use_validation: true    # Enable validation
+
 
 # Signal Processing
 signal_processing:
   fps: 30  # Will be auto-detected from video
 
-  # Preprocessing (applied to raw signal before bandpass filter)
+  # Preprocessing pipeline (applied to raw signal before bandpass filter)
+  # Order is fixed: savgol -> detrend -> nonlinear_amplification -> normalize
   preprocessing:
-    # Moving average smoothing (reduces high-frequency noise)
-    moving_average:
-      enabled: true
-      window_size: 5  # Frames (5 = ~0.17s at 30fps)
-
-    # Savitzky-Golay filter (preserves peaks better than moving average)
+    # 1. Savitzky-Golay smoothing — preserves breath peaks while removing sensor noise
     savgol:
-      enabled: false  # Disable by default (use moving_average OR savgol, not both)
-      window_size: 11  # Must be odd number
-      polyorder: 3     # Polynomial order (lower = more smoothing)
+      enabled: true
+      window_size: 5  # Must be odd number; small values (7-11) keep spikes sharp
+      polyorder: 2     # Polynomial order (lower = more smoothing)
 
-    # Detrending (removes slow baseline drift)
+    # 2. Detrend — removes slow baseline drift caused by handling / wiggling
     detrend:
       enabled: true
       method: 'linear'  # Options: linear, constant
 
-    # Normalization (scales signal to consistent range)
+    # 3. Nonlinear amplification — squares (or TKEO-amplifies) the signal so that
+    #    breath spikes become much taller than leftover noise
+    nonlinear_amplification:
+      enabled: false
+      method: 'tkeo'  # Options: tkeo (Teager-Kaiser, recommended), square (x^2)
+
+    # 4. Normalization — rescales after the nonlinearity changed the distribution
     normalize:
       enabled: true
       method: 'zscore'  # Options: zscore, minmax, robust
 
+    outlier_clip:
+      std_threshold: 3
+
+# Bandpass Filter 
   # Bandpass filter (main frequency filtering)
   bandpass_filter:
-    low_freq: 0.5   # Hz (30 BPM)
-    #high_freq: 4.0  # Hz (240 BPM)
-    high_freq: 6.0  # Hz (360 BPM)
-    order: 4
+    low_freq: 1.0   # Hz (90 BPM) - 5 BPM margin below minimum
+    high_freq: 9.0  # Hz (312 BPM) - 11 BPM margin above maximum
+    order: 2
 
   # Real-time breath counting parameters
   breath_counting:
-    min_signal_length: 60  # Minimum frames before attempting detection (1 second at 30fps)
-    peak_prominence_ratio: 0.20  # Peak must be 20% of signal range above baseline
-    max_breathing_rate_bpm: 360  # Maximum physiological rate (sets min distance between peaks)
-    peak_height_threshold_ratio: 0.10  # Peak must be 10% of range above mean signal
+    method: 'autocorrelation_windowed'  # Options: 'emv_phase', 'fft_frequency', 'fft_windowed', 'autocorrelation', "autocorrelation_windowed"
 
-# Visualization
-visualization:
-  show_detections: true
-  show_tracking: true
-  save_frames: false
-  output_dir: 'data/results'
+    # EMV phase-based method parameters (only used when method='emv_phase')
+    emv_phase:
+      min_phase_duration: 0.05  # Minimum duration for inspiration/expiration phases (seconds). Increase to reduce overcounting.
+      zero_crossing_threshold: 0.02  # Minimum signal magnitude for valid zero crossing (0.0-1.0). Increase to filter noise crossings.
+      min_cycle_amplitude: 0.10  # Minimum cycle amplitude as fraction of signal range (0.0-1.0). Increase to reject shallow cycles.
+      ie_ratio_range: [0.3, 5.0]  # Valid I:E ratio range [min, max]. Tighten range to reject abnormal cycles.
 
-# Presets
-presets:
-  quick:
-    localization: {method: 'simple'}
-    stabilization: {enabled: false}
-    measurement: {method: 'intensity'}
-  
-  balanced:
-    localization: {method: 'simple'}
-    stabilization: {enabled: true, method: 'tracker_position'}
-    measurement: {method: 'optical_flow'}
-  
-  accurate:
-    localization: {method: 'motion'}
-    stabilization: {enabled: true, method: 'optical_flow_masked'}
-    measurement: {method: 'optical_flow_divergence'}
+    # FFT-based frequency estimation (only used when method='fft_frequency' or 'fft_windowed')
+    # Based on proven 2018 approach - immune to amplitude variation
+    fft_frequency:
+      window_size: 15.0  # Window duration in seconds (for windowed FFT version). Longer = better freq resolution
+      overlap: 0.5  # Window overlap fraction (0.0-0.9) for windowed version
+      min_snr: 3.0  # Minimum signal-to-noise ratio to trust estimate (3-5 recommended)
+      wiener_scaling: true  # Apply sqrt(f) Wiener noise compensation
+
+    # Autocorrelation method parameters (only used when method='autocorrelation' or 'autocorrelation_windowed')
+    # Detects periodicity without amplitude assumptions or hard peak spacing constraints
+    autocorrelation:
+      min_breathing_rate_bpm: 90   # Minimum BPM (1.5 Hz, matches bandpass low_freq)
+      max_breathing_rate_bpm: 312  # Maximum BPM (5.2 Hz, matches bandpass high_freq)
+      acf_min_prominence: 0.15     # Minimum ACF peak prominence (0-1 scale). Higher = stricter, lower = more sensitive
+      acf_peak_selection: 'first'  # Peak selection: 'first' (fundamental frequency) or 'highest' (max prominence)
+      min_confidence: 0.3          # Minimum confidence to trust estimate
+      low_correlation_threshold: 0.3  # ACF peak value below this triggers low-confidence warning
+      window_size: 15.0            # Window duration in seconds (for autocorrelation_windowed). Longer = better for periodicity detection
+      overlap: 0.5                 # Window overlap fraction (0.0-0.9) for windowed version

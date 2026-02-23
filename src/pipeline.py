@@ -2,32 +2,30 @@
 Main breathing analysis pipeline
 """
 
+from collections import deque
 import matplotlib.pyplot as plt
 
 import cv2
 import numpy as np
 import yaml
-from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 from tqdm import tqdm
 
 from src.detectors import get_detector
-from src.segmenters import get_segmenter, convert_mask_to_frame_coords
 from src.localizers import get_localizer
 from src.measurements import get_measurement
 from src.signal_processing import SignalProcessor
-from src.stabilizers import get_stabilizer
-from src.utils import get_inner_hand_bbox
+from src.utils.data_utils import Segment, extract_bird_mask, verify_hand_segmentation
+
 
 
 class BreathingAnalyzer:
     """
-    Complete breathing analysis pipeline
+    Complete breathing analysis pipeline RELYING ON THE BIRD MASKS!
     
     Phases:
-    1. Initialization: Detect hand, segment bird, locate chest
+    1. Initialization: Locate ROI (detect the bird and hand masks, locate chest by energy content)
     2. Tracking: Track hand and chest ROIs
-    3. Stabilization (optional): Remove hand motion
     4. Measurement: Extract breathing signal
     5. Signal processing: Estimate breathing rate
     """
@@ -48,42 +46,48 @@ class BreathingAnalyzer:
         print("="*60)
 
         # Initialize components
-        self.detector = get_detector(self.config['detection'])
+        self.detector = get_detector(self.config['detection']) # un Auto mode: HAND detector. Manual: acts directly as CHEST "detector"
+        self.bird_detector = get_detector(self.config['segmentation']) # TODO double check naming on config file
+        self.rely_segmentator = self.config['segmentation'].get('rely_segmentator', True)
 
-        # Check if segmentation is enabled
-        self.segmentation_enabled = self.config['segmentation'].get('enabled', True)
-        if self.segmentation_enabled:
-            self.segmenter = get_segmenter(self.config['segmentation'])
-        else:
+        # Check detection mode
+        self.detection_mode = self.config['detection'].get('mode', 'auto')
+        self.manual_mode = (self.detection_mode == 'manual')
+
+        #buffers config
+        self.buffer_frames_size = self.config["localization"]['custom_localizer'].get('buffer_frames', 30)
+        self.buffer_frames_for_masks = self.config["localization"]['custom_localizer'].get('hand_mask_buffer_frames', 20)
+        self.debug_plots=False
+
+        # Skip segmentation and localization in manual mode
+        if self.manual_mode:
+            self.segmentation_enabled = False
             self.segmenter = None
-            print("⚠ Bird segmentation DISABLED - using hand mask for chest localization")
+            self.localizer = None
+            print("⚙ MANUAL MODE: User will select chest ROI directly")
+            print("⚠ Skipping: hand detection, bird segmentation, chest localization")
+        else:
+            # Check if segmentation is enabled
+            self.segmentation_enabled = self.config['segmentation'].get('enabled', True)
+            print("SELF__SEGMENTATION ENABE? ", self.segmentation_enabled)
 
-        self.localizer = get_localizer(self.config['localization'])
+            self.localizer = get_localizer(self.config['localization'])
         self.measurement = get_measurement(self.config['measurement'])
         self.signal_processor = SignalProcessor(self.config['signal_processing'])
-        self.stabilizer = get_stabilizer(self.config['stabilization'])
+
+        # buffers
+        self.buffer_frames = deque(maxlen=self.buffer_frames_size) 
 
         # Tracking
         self.hand_tracker = None
         self.chest_tracker = None
-        self.redetect_interval = self.config['tracking']['redetect_interval']
+        self.redetect_interval = self.config['tracking'].get('redetect_interval', 0)
         self.start_frame = self.config['tracking'].get('start_frame', 0)
         self.max_frames = self.config['tracking'].get('max_frames', None)
-
-        # Stabilization
-        self.stabilization_enabled = self.config['stabilization']['enabled']
-
-        # Breath counting parameters
-        breath_config = self.config['signal_processing'].get('breath_counting', {})
-        self.min_signal_length = breath_config.get('min_signal_length', 30)
-        self.peak_prominence_ratio = breath_config.get('peak_prominence_ratio', 0.2)
-        self.max_breathing_rate = breath_config.get('max_breathing_rate_bpm', 240)
-        self.peak_threshold_ratio = breath_config.get('peak_height_threshold_ratio', 0.3)
 
         # State
         self.prev_frame = None
         self.prev_hand_bbox = None
-        self.prev_chest_stabilized = None
 
         # Results
         self.breathing_signal = []
@@ -103,6 +107,530 @@ class BreathingAnalyzer:
         print("="*60)
         print("✓ All components initialized")
         print("="*60)
+
+    def _initialize_tracker(self, frame, roi):
+        tracker_type = self.config['tracking']['chest_tracker']
+        self.chest_tracker = self._create_tracker(tracker_type)
+
+        roi_tuple = tuple(int(v) for v in roi)
+        self.chest_tracker.init(frame, roi_tuple)
+        #self.tracking_status.append(1)
+
+    def _generate_distance_mask(self, segment: Segment) -> np.ndarray:
+        """
+        Generate a distance gradient from center
+        """
+
+        h, w = segment.mask.shape
+        bx, by, bw, bh = segment.bbox
+        bird_center_x = bx + bw / 2
+        bird_center_y = by + bh / 2
+
+        # 1. Localized Distance Gradient
+        y, x = np.ogrid[:h, :w]
+        dist_x = (x - bird_center_x) / (bw / 2)
+        dist_y = (y - bird_center_y) / (bh / 2)
+        dist_norm = np.sqrt(dist_x**2 + dist_y**2)
+
+        return dist_norm
+
+    def _aggregate_masks(
+        self,
+        bird_masks: list[Segment],
+        hand_masks: list[Segment],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Fuse per-frame bird and hand masks into a single clean bird silhouette.
+
+        Takes the list of per-frame ``Segment`` objects produced by
+        ``_get_masks`` and combines them using a multi-step consensus strategy
+        designed to handle mask noise, hand-bird overlap, and detection
+        inconsistencies across frames.
+
+        Steps:
+            1. **Distance gradient** — A normalised distance map ``dist_norm``
+               is computed for every pixel relative to the center of the most
+               recent bird bounding box. Pixels at the center have distance 0;
+               pixels at the bbox edge have distance ≈ 1.
+
+            2. **Dynamic hand threshold ("Sanctuary Guard")** — The threshold
+               required for a pixel to be classified as hand varies with
+               ``dist_norm`` following a Gaussian drop-off:
+
+               .. code-block:: text
+
+                   thresh = 0.1 + 0.85 * exp(-1.5 * dist_norm²)
+
+               This makes it nearly impossible to label bird-center pixels as
+               hand (threshold ≈ 0.95), while pixels far from the bird bbox
+               center are held to a strict standard (threshold ≈ 0.05 at
+               corners). The resulting binary hand map is morphologically
+               dilated by a 7×7 kernel to cover borderline regions.
+
+            3. **Hand persistence consensus** — The hand masks from all frames
+               are stacked and averaged. Only pixels whose mean hand activation
+               exceeds the dynamic threshold (step 2) are kept as hand pixels.
+
+            4. **Bird persistence with sanctuary bias** — The bird masks are
+               similarly stacked and averaged. The acceptance threshold for bird
+               pixels also depends on ``dist_norm``, but in the opposite
+               direction: central pixels need only 20% persistence while
+               peripheral pixels require up to 60%, biasing the mask toward a
+               tight, reliable core region.
+
+            5. **Combine and solidify** — The final bird mask is the set of
+               pixels that pass the bird consensus (step 4) *and* are not
+               covered by the dilated hand mask (step 3). The largest connected
+               contour of that intersection is replaced by its convex hull to
+               produce a filled, hole-free silhouette.
+
+        Args:
+            bird_masks (list[Segment]): Per-frame bird detections. Each
+                ``Segment.mask`` is a uint8 binary image (0/255) in full-frame
+                coordinates. The bbox from the *last* element is used as the
+                reference for the distance gradient.
+            hand_masks (list[Segment]): Per-frame hand detections, index-aligned
+                with ``bird_masks``. Each ``Segment.mask`` is a uint8 binary
+                image (0/255) in full-frame coordinates.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: A pair
+            ``(final_bird_mask, super_hand_mask)`` where:
+
+                - ``final_bird_mask``: uint8 image (0/255), same shape as the
+                  input masks, containing the convex-hull-filled bird silhouette
+                  with hand regions removed.
+                - ``super_hand_mask``: uint8 image (0/255), the dilated
+                  consensus hand mask used to subtract hand pixels from the
+                  bird result (useful for debugging or downstream filtering).
+        """
+
+        if len(bird_masks) == 0:
+            raise Exception("No bird masks to aggregate!!")
+
+        if len(bird_masks) == 0 or len(hand_masks) == 0:
+            raise Exception("No masks to aggregate!!")
+        
+        # If we had not get a valid hand bbox, directly return a dummy shrinked BIRD bbox
+        if len(hand_masks)==1 and hand_masks[0].source is None:
+            # dummy hand mask => just a fully 0 empty mask
+            h, w = self.buffer_frames[-1].shape[:2]
+            super_hand = np.zeros((h, w), dtype=np.uint8)
+
+            # final_mask => apply distance gradient to last bird mask, removing corners
+
+            source_frame = bird_masks[-1].source
+            # bx, by, bw, bh = bird_masks[-1].bbox
+            # bird_center_x = bx + bw / 2
+            # bird_center_y = by + bh / 2
+            # y, x = np.ogrid[:h, :w]
+            # dist_x = (x - bird_center_x) / (bw / 2)
+            # dist_y = (y - bird_center_y) / (bh / 2)
+            # dist_norm = np.sqrt(dist_x**2 + dist_y**2)
+            # TODO: double check this option. do i need to set a h,w based on buffer_frameS? (as commented out)
+            dist_norm = self._generate_distance_mask(bird_masks[-1])
+            radial_mask = (dist_norm <= 1.0).astype(np.uint8)
+            final_mask = (radial_mask * 255).astype(np.uint8)
+
+            
+            #plot_matrices([(source_frame, "Source frame"), (super_hand, "Dummy super hand"), (final_mask, "Dummy final bird mask")], suptitle="Dummy masks")
+
+            # Returns: final_bird and hand masks
+            return final_mask, super_hand
+
+        # plot_matrices(
+        #     [(bird_masks[0].mask, "Bird first mask"), (hand_masks[0].mask, "Hand first mask")],
+        #     suptitle="Bird and Hand Masks (frist) - from agg masks")
+
+        dist_norm = self._generate_distance_mask(bird_masks[-1])
+
+        # 2. THE DYNAMIC THRESHOLD (The "Sanctuary Guard")
+        # We use a steep drop-off. 
+        # Center (0.0) -> 0.95 (Almost impossible to ban bird as hand)
+        # Edge (1.0)   -> 0.2  (Standard skepticism)
+        # Corners (>1.5) -> 0.05 (Extremely strict, cleans all shards)
+        hand_dynamic_thresh = 0.1 + 0.85 * np.exp(-1.5 * dist_norm**2)
+
+        # 3. Hand Persistence Consensus
+        hand_stack = [h.mask.astype(np.uint8) for h in hand_masks]
+        hand_persistence = np.mean(hand_stack, axis=0) / 255.0
+        # Pixel is only a hand if it's persistent AND outside the sanctuary guard
+        super_hand_bin = (hand_persistence > hand_dynamic_thresh).astype(np.uint8)
+        super_hand = cv2.dilate(super_hand_bin * 255, np.ones((7, 7), np.uint8))
+
+        # 4. Bird Persistence with Sanctuary Bias
+        # In the center, we accept bird pixels even if they have lower persistence (0.2)
+        bird_persistence = np.mean([b.mask for b in bird_masks], axis=0) / 255.0
+        bird_dynamic_thresh = 0.2 + 0.4 * (1 - np.exp(-dist_norm**2))
+        bird_consensus = (bird_persistence > bird_dynamic_thresh)
+
+        if not self.rely_segmentator:
+            bird_mask_consensus = bird_consensus & (super_hand == 0) # remove hand 
+        else:
+            bird_mask_consensus = bird_consensus # rely on bird masks only
+
+        # 5. Combine and Solidify (Convex Hull)
+        consensus = (bird_mask_consensus).astype(np.uint8) * 255
+
+        contours, _ = cv2.findContours(consensus, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            best_cnt = max(contours, key=cv2.contourArea)
+            hull = cv2.convexHull(best_cnt)
+            final_mask = np.zeros_like(consensus)
+            cv2.drawContours(final_mask, [hull], -1, 255, -1)
+        else:
+            final_mask = consensus
+        # Returns: final_bird and hand masks
+        return final_mask, super_hand
+
+    def _get_masks(self) -> tuple[list[Segment] | None, list[Segment] | None]:
+        """
+        Run hand and bird detection over the most recent buffered frames using batch inference.
+
+        Uses batch inference for both hand and bird detectors (RF-DETR) to process
+        multiple frames in a single forward pass, which is significantly faster than
+        loop-based detection (2-5x speedup expected).
+
+        Workflow:
+            1. **Batch hand detection** — ``self.detector.detect_batch(frames)``
+               processes all frames at once, returning bounding boxes, confidence
+               scores, and binary segmentation masks.
+            2. **Batch bird detection** — ``self.bird_detector.detect_batch(frames)``
+               processes all frames at once for bird detection.
+            3. **Quality validation** — Each hand detection is validated via
+               ``verify_hand_segmentation``.
+            4. **Pairing** — Valid hand/bird pairs are stored as ``Segment`` objects.
+
+        Both results for a given frame are appended together, so the two
+        returned lists always have the same length and are index-aligned
+        (``detected_hands[i]`` and ``bird_results[i]`` correspond to the same
+        source frame).
+
+        Args:
+            None. Reads from ``self.buffer_frames``, ``self.detector``,
+            ``self.bird_detector``, and ``self.buffer_frames_for_masks``.
+
+        Returns:
+            tuple[list[Segment], list[Segment]]: A pair
+            ``(detected_hands, bird_results)`` where each list contains
+            ``Segment`` objects with ``bbox``, ``confidence``, ``mask``, and
+            ``source`` fields.
+
+            Returns ``(None, None)`` if no valid hand detection was found in
+            any of the buffered frames.
+        """
+
+        hand_mask_limit = self.buffer_frames_for_masks
+        frames_to_process = list(self.buffer_frames)[-hand_mask_limit:]
+
+        detected_hands = []   # hand detections
+        bird_results = []     # bird detections
+
+        # Check if detectors support batch inference
+        has_batch_support = hasattr(self.detector, 'detect_batch') and hasattr(self.bird_detector, 'detect_batch')
+
+        if has_batch_support:
+            # --- BATCH INFERENCE (FAST PATH) ---
+            print(f"Running batch inference on {len(frames_to_process)} frames...")
+
+            # Batch hand detection (single forward pass)
+            hand_detections = self.detector.detect_batch(frames_to_process)
+
+            # Batch bird detection (single forward pass)
+            bird_detections = self.bird_detector.detect_batch(frames_to_process)
+
+            # Process results for each frame
+            for frame, (hand_bbox, confidence, hand_mask), (bird_bbox, _, pred_bird_mask) in \
+                    zip(frames_to_process, hand_detections, bird_detections):
+
+                if hand_bbox is None or hand_mask is None:
+                    # Check if bird was found without hand
+                    if bird_bbox is not None:
+                        bird_results.append(
+                            Segment(bbox=bird_bbox, confidence=None,
+                                    mask=pred_bird_mask, source=frame))
+                    continue
+
+                # VERIFY QUALITY
+                valid_hand_mask = verify_hand_segmentation(bbox=hand_bbox, mask=hand_mask, confidence=confidence)
+
+                if valid_hand_mask:  # Valid hand
+                    # Store it
+                    detected_hands.append(
+                        Segment(bbox=hand_bbox, confidence=confidence, mask=hand_mask, source=frame)
+                    )
+
+                    if bird_bbox is not None:  # If bird bbox available, get its mask
+                        if pred_bird_mask is not None:
+                            bird_mask = pred_bird_mask
+                        else:
+                            bird_mask = extract_bird_mask(frame, hand_mask, bird_bbox)
+
+                        bird_results.append(
+                            Segment(bbox=bird_bbox, confidence=None, mask=bird_mask, source=frame)
+                        )
+                else:  # Invalid hand
+                    if bird_bbox is not None:  # If bird bbox, store it without mask
+                        bird_results.append(
+                            Segment(bbox=bird_bbox, confidence=None, mask=pred_bird_mask, source=frame))
+
+        else:
+            # --- FALLBACK: LOOP-BASED DETECTION (SLOW PATH) ---
+            print(f"⚠ Batch inference not available, falling back to loop-based detection")
+
+            for frame in frames_to_process:
+                # --- Hand detection (RF-DETR) ---
+                hand_bbox, confidence, hand_mask = self.detector.detect(frame)
+
+                # --- Bird detection (fine-tuned YOLO) ---
+                bird_bbox, _, pred_bird_mask = self.bird_detector.detect(frame)
+
+                if hand_bbox is None or hand_mask is None:
+                    # Check if bird was found without hand
+                    if bird_bbox is not None:
+                        bird_results.append(
+                            Segment(bbox=bird_bbox, confidence=None,
+                                    mask=pred_bird_mask, source=frame))
+                    else:
+                        print("No hand NOR bird found!!!!")
+
+                    continue
+
+                # VERIFY QUALITY
+                valid_hand_mask = verify_hand_segmentation(bbox=hand_bbox, mask=hand_mask, confidence=confidence)
+
+                if valid_hand_mask:  # Valid hand
+                    # Store it
+                    detected_hands.append(
+                        Segment(bbox=hand_bbox, confidence=confidence, mask=hand_mask, source=frame)
+                    )
+
+                    if bird_bbox is not None:  # If bird bbox available, get its mask
+                        if pred_bird_mask is not None:
+                            bird_mask = pred_bird_mask
+                        else:
+                            bird_mask = extract_bird_mask(frame, hand_mask, bird_bbox)
+
+                        bird_results.append(
+                            Segment(bbox=bird_bbox, confidence=None, mask=bird_mask, source=frame)
+                        )
+
+                    else:  # No bird bbox available. Just continue
+                        continue
+
+                else:  # Invalid hand
+                    if bird_bbox is not None:  # If bird bbox, store it without mask
+                        bird_results.append(Segment(bbox=bird_bbox, confidence=None, mask=pred_bird_mask, source=frame))
+                    else:  # No hand nor bird available. just warn
+                        continue
+
+        if self.debug_plots:
+            # --- Visualize masks ---
+            if bird_results:
+                for idx, bird in enumerate(bird_results):
+                    #bird = bird_results[-1]
+                    hand = detected_hands[idx]
+                    vis = bird.source.copy()
+                    bx, by, bw, bh = bird.bbox
+                    hx, hy, hw, hh = hand.bbox
+
+                    hx = int(hx)
+                    hy = int(hy)
+                    hw = int(hw)
+                    hh = int(hh)
+
+                    # Overlay hand mask as semi-transparent green if available
+                    if hand.mask is not None:
+                        mask_bool = hand.mask > 127
+                        overlay = vis.copy()
+                        overlay[mask_bool] = (200, 0, 0)  # blue
+                        cv2.addWeighted(overlay, 0.3, vis, 0.7, 0, vis)
+                    
+                    # Draw hand bbox on top
+                    cv2.rectangle(vis, (hx, hy), (hx + hw, hy + hh), (255, 0, 0), 2)
+                    cv2.putText(vis, f"bird {hand.confidence:.2f}", (hx, hy - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 2)
+
+                    # Overlay bird mask as semi-transparent green if available
+                    if bird.mask is not None:
+                        mask_bool = bird.mask > 127
+                        overlay = vis.copy()
+                        overlay[mask_bool] = (0, 200, 0)  # green
+                        cv2.addWeighted(overlay, 0.3, vis, 0.7, 0, vis)
+
+                    # Draw bird bbox on top
+                    cv2.rectangle(vis, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
+                    cv2.putText(vis, f"bird {bird.confidence:.2f}", (bx, by - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    
+                    plt.figure(figsize=(15, 5))
+                    plt.subplot(1, 2, 1)
+                    plt.imshow(cv2.cvtColor(vis, cv2.COLOR_BGR2RGB))
+                    plt.title(f"Frame {idx} - Bird Detection (YOLO FT) - conf: B: {bird.confidence:.2f} H: {hand.confidence:.2f}")
+                    plt.axis('off')
+
+        if not detected_hands:
+            if not bird_results:
+                print('\n⚠ WARNING: No hand NOR bird detected in any frame')
+            else:
+                # Consistency check: reject if bbox area varies wildly (likely FP)
+                areas = [b.bbox[2] * b.bbox[3] for b in bird_results if b.bbox is not None]
+                if areas:
+                    min_area, max_area = min(areas), max(areas)
+                    if min_area > 0 and (max_area / min_area) > 1.5:
+                        print(f'\n⚠ WARNING: Bird bbox area varies too much ({max_area/min_area:.2f}x) - likely false positives')
+                        print('  Discarding bird results and adding dummy hand')
+                        bird_results = []
+                
+                # Set a dummy hand mask for aggregation
+                detected_hands.append(
+                    Segment(bbox=None, confidence=None, mask=None, source=None))
+                print(f'\n✓ No valid hands, but {len(bird_results)} birds - using dummy hand')
+
+
+        # Print statistics (TODO> debug flag?)
+        #avg_hand_conf = sum(s.confidence for s in detected_hands) / len(detected_hands)
+        #avg_bird_conf = sum(s.confidence for s in bird_results) / len(bird_results) if bird_results else 0.0
+        #print(f"Hand detections : {len(detected_hands)}/{hand_mask_limit} | avg conf: {avg_hand_conf:.2f}")
+        #print(f"Bird detections : {len(bird_results)}/{len(detected_hands)}  | avg YOLO conf: {avg_bird_conf:.2f}")
+
+        return detected_hands, bird_results
+   
+    def _locate_bird_roi(self) -> tuple[int, int, int, int]:
+        """
+        Estimate the bird chest ROI from the recent frame buffer.
+
+        Runs the full detection-aggregation-localization pipeline over the
+        last `buffer_frames_size` buffered frames to produce a stable ROI
+        that the tracker can be initialized on.
+
+        Steps:
+            1. Validate that the frame buffer contains at least
+               `buffer_frames_size` frames.
+            2. Run hand (RF-DETR) and bird (YOLO) detection over the buffer
+               via `_get_masks`, returning per-frame `Segment` lists.
+            3. Aggregate the per-frame masks via `_aggregate_masks`:
+               - Applies a distance-based dynamic threshold to separate hand
+                 pixels from bird pixels.
+               - Builds consensus masks using persistence across frames.
+               - Fills the final bird mask with a convex hull.
+            4. Pass the aggregated masks to `self.localizer.locate` to find
+               the chest ROI within the clean bird silhouette.
+
+        Raises:
+            ValueError: If `self.buffer_frames` has fewer than
+                `self.buffer_frames_size` frames.
+            Exception: If no hand or bird was detected in any of the
+                buffered frames.
+
+        Returns:
+            tuple[int, int, int, int]: The chest ROI as ``(x, y, w, h)``
+                in frame coordinates, ready to initialize a tracker.
+        """
+
+
+        min_elements = self.buffer_frames_size
+        if len(self.buffer_frames) < min_elements:
+            raise ValueError(f"Need more frames to buffer; got {len(self.buffer_frames)}.")
+        
+        buffer_masks_hands, buffer_masks_birds = self._get_masks()
+
+        if buffer_masks_birds is None and buffer_masks_hands is None:
+            # TODO: how to handle this? should it just skip this frame?? set breathing=0?
+            raise Exception(f"Could not locate any bird in the last {min_elements} frames!")
+
+        # validate that we have at least one segmentator result (bird.mask)
+        found_any_mask = any(obj.mask is not None for obj in buffer_masks_birds)
+        if not found_any_mask:
+            raise Exception(f"Could not locate any bird in the last {min_elements} frames!. Can not rely on bird segmentator. Disable it")
+        
+        print(f"Detection results. BIRD masks: {len(buffer_masks_birds)}, HAND masks: {len(buffer_masks_hands)}")
+        agg_mask_bird, agg_mask_hand = self._aggregate_masks(bird_masks=buffer_masks_birds, hand_masks=buffer_masks_hands)
+
+        # Locate ROI based on the movement within the clean bird mask
+        #roi= self.localizer.locate_w_bird_mask(frame_buffer=self.buffer_frames, hand_mask=agg_mask_hand, bird_mask=agg_mask_bird)
+        roi= self.localizer.locate(frame_buffer=self.buffer_frames, hand_mask=agg_mask_hand, bird_mask=agg_mask_bird)
+
+        return roi
+
+    def _relocate_roi(self, frame) -> Dict:
+        """
+        Locate the bird chest ROI from the frame buffer and reinitialize the tracker.
+
+        Called on the very first processed frame, whenever periodic re-detection
+        fires (`redetect_interval`), and whenever `_track_and_measure` reports a
+        tracking failure. Delegates ROI estimation to `_locate_bird_roi`, stores
+        the ROI dimensions for shape-preserving tracking, then reinitializes
+        `self.chest_tracker` on the current frame.
+
+        Side effects:
+            - Updates ``self.init_roi_w`` and ``self.init_roi_h`` to the detected
+              ROI dimensions (used by ``_track_and_measure`` to keep the box size
+              constant across tracked frames).
+            - Reinitializes ``self.chest_tracker`` via ``_initialize_tracker``.
+            - Appends ``0.0`` to ``self.breathing_signal`` (initialization frame
+              produces no real measurement).
+            - Resets ``self.measurement`` state.
+            - Stores a copy of the current frame in ``self.prev_frame``.
+
+        Args:
+            frame (np.ndarray): Current BGR video frame used to initialize the
+                tracker.
+
+        Returns:
+            dict: A result dict with keys:
+                - ``'chest_roi'`` (tuple[int,int,int,int]): ``(x, y, w, h)`` of
+                  the detected ROI.
+                - ``'breathing'`` (float): Always ``0.0`` for initialization frames.
+                - ``'mode'`` (str): Always ``'detected'``.
+        """
+
+        try:
+            bird_roi = self._locate_bird_roi()
+            bx, by, bw, bh = bird_roi
+
+            self.init_roi_w=bw
+            self.init_roi_h=bh
+            
+
+            # (re)init tracker
+            self._initialize_tracker(frame, bird_roi)
+
+            # Append zero breathing for initialization frames
+            
+            # DO NOT SAVE IT. not real signal!
+            #self.breathing_signal.append(0.0)
+
+            self.prev_frame = frame.copy()
+
+
+            ###########test#####
+            cx, cy, cw, ch = [int(v) for v in bird_roi]
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            chest_region = gray[cy:cy+ch, cx:cx+cw]
+            
+            # RESET updated: now it sets the argm as prev_chest, so we dont loose it
+            self.measurement.reset(chest_region)
+            ###################
+
+            #self.measurement.reset()
+
+            return {
+                'chest_roi': bird_roi,
+                'breathing': 0.0,
+                'mode': 'detected'
+            }
+        
+        except:
+            # In case it couldnt find a suitable ROI: if tracker already exists, keep it. If not, throw error (failed to initialize very first ROI)
+            if self.chest_tracker is not None:
+                return {
+                    'chest_roi': None,
+                    'breathing': 0.0,
+                    'mode': 'failed_to_update'
+                }
+            else:
+                raise Exception("Could not initialize tracker. No valid ROI found. Increase buffer size or look for a more stable start_frame")
     
     def process_video(self, video_path: str, output_path: Optional[str] = None) -> Dict:
         """
@@ -144,7 +672,8 @@ class BreathingAnalyzer:
 
         # Skip to start frame
         if self.start_frame > 0:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, self.start_frame)
+            actual_start_frame = self.start_frame - self.buffer_frames_size
+            cap.set(cv2.CAP_PROP_POS_FRAMES, actual_start_frame)
 
         # Calculate frames to process
         frames_available = total_frames - self.start_frame
@@ -160,7 +689,11 @@ class BreathingAnalyzer:
             out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
         # Process frames
-        frame_idx = self.start_frame
+        if self.start_frame > 0:
+            frame_idx = self.start_frame - self.buffer_frames_size
+        else:
+            frame_idx = self.start_frame
+        
         frames_processed = 0
         self.breathing_signal = []
         self.tracking_status = []
@@ -185,18 +718,48 @@ class BreathingAnalyzer:
         self.beep_frames = []  # Track which frames have beeps for audio generation
 
         with tqdm(total=frames_to_process, desc="Processing") as pbar:
+            
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
-
+                
                 # Check if we've reached max frames limit
                 if self.max_frames is not None and frames_processed >= self.max_frames:
                     break
 
-                # Process frame
-                result = self.process_frame(frame, frame_idx)
+                # Still just buffering
+                self.buffer_frames.append(frame)
+                if frame_idx<self.start_frame:
+                    frame_idx+=1                    
+                    continue
 
+                if self.manual_mode:
+                    # If manual mode, prompt manual ROI only once to init tracker
+                    if frame_idx == self.start_frame:
+                        manual_chest_roi, confidence, chest_mask = self.detector.detect(frame)
+                        print("MANUAL CHEST ROI:  ", manual_chest_roi)
+                        bx, by, bw, bh = manual_chest_roi
+
+                        self.init_roi_w=bw
+                        self.init_roi_h=bh
+
+                        if manual_chest_roi is None:
+                            raise Exception("No manual chest ROI provided! Try again making sure to select a valid ROI")
+
+                        self._initialize_tracker(frame, manual_chest_roi)                    
+                else:
+                    # (RE)Initialization (first frame, periodic re-detection, or trackers not initialized)
+                    should_locate_roi = frame_idx == self.start_frame or (self.redetect_interval > 0 and frame_idx % self.redetect_interval == 0) or self.chest_tracker is None
+
+                    if should_locate_roi:
+                        self._relocate_roi(frame)
+                        frame_idx+=1
+                        continue
+                
+                # Tracking + Measurement
+                result = self._track_and_measure(frame)
+                
                 # Get audio level for this frame
                 audio_level = 0.0
                 if len(audio_samples) > frames_processed:
@@ -205,26 +768,15 @@ class BreathingAnalyzer:
                 # Collect metadata (after processing to get hand/chest positions)
                 hand_bbox = result.get('hand_bbox') if result else None
                 chest_roi = result.get('chest_roi') if result else None
+                tracker_status= result.get('mode') if result else None
+
+                if tracker_status is not None and tracker_status== 'detected':
+                    print(f"Tracked failed to track ROI at frame {frame_idx} and was REINITIALIZED")
+
                 self._collect_metadata(frame, audio_level, hand_bbox, chest_roi)
 
                 # Record tracking status
                 self.tracking_status.append(1 if result is not None else 0)
-
-                # Real-time breath counting (simple peak detection)
-                if len(self.breathing_signal) > 10:
-                    self._update_breath_count(frames_processed, fps)
-
-                # Visualization
-                if output_path and result:
-                    # Decrement flash counter
-                    if self.breath_flash_frames > 0:
-                        self.breath_flash_frames -= 1
-
-                    vis_frame = self._visualize_frame(frame, result, frame_idx,
-                                                     breath_count=self.breath_count,
-                                                     current_rate=self.current_rate_bpm,
-                                                     breath_detected=(self.breath_flash_frames > 0))
-                    out.write(vis_frame)
 
                 frame_idx += 1
                 frames_processed += 1
@@ -233,14 +785,6 @@ class BreathingAnalyzer:
         cap.release()
         if out:
             out.release()
-
-        # Add audio beeps to output video
-        if output_path:
-            if len(self.beep_frames) > 0:
-                print(f"\nAdding audio beeps ({len(self.beep_frames)} breaths detected)...")
-                self._add_beeps_to_video(output_path, video_path, fps, frames_to_process)
-            else:
-                print(f"\n⚠ No breaths detected - no beeps to add")
 
         # Estimate breathing rate
         print("\nEstimating breathing rate...")
@@ -263,261 +807,80 @@ class BreathingAnalyzer:
             'total_frames': frame_idx,
             'breathing_signal': self.breathing_signal,
             'tracking_status': self.tracking_status,
-            'metadata': self.metadata
+            'metadata': self.metadata,
+            'breath_counts': info.get('breath_counts', {}),
+            'validation': info.get('validation', {})
         }
-        
-        print(f"\n{'='*60}")
-        print(f"RESULTS")
-        print(f"{'='*60}")
-        print(f"Breathing Rate (FFT): {breathing_rate:.1f} BPM")
-        print(f"Confidence: {info.get('confidence', 0.0):.2f}")
-        print(f"Frequency: {info.get('frequency_hz', 0.0):.2f} Hz")
-
-        # Display breath counts
-        if 'breath_counts' in info:
-            print(f"\nBREATH COUNTS (Peak Detection):")
-            breath_counts = info['breath_counts']
-            for window, data in breath_counts.items():
-                if window == 'full':
-                    print(f"  Full duration ({data.get('duration_s', 0):.1f}s): "
-                          f"{data['count']} breaths → {data['rate_bpm']:.1f} BPM")
-                else:
-                    print(f"  {window}: {data['count']} breaths → {data['rate_bpm']:.1f} BPM")
-
-            # Validation
-            if 'validation' in info:
-                val = info['validation']
-                status = "✓ Consistent" if val['is_consistent'] else "⚠ Inconsistent"
-                print(f"\nValidation: {status} (CV: {val['cv']:.2%})")
-                print(f"Mean rate across windows: {val['mean_rate']:.1f} BPM")
-
-        print(f"{'='*60}\n")
         
         return results
     
-    def process_frame(self, frame: np.ndarray, frame_idx: int) -> Optional[Dict]:
-        """
-        Process single frame
-        
-        Args:
-            frame: Input frame
-            frame_idx: Frame index
-        
-        Returns:
-            result: Dictionary with detection/tracking results
-        """
-        # PHASE 1: Initialization (first frame, periodic re-detection, or trackers not initialized)
-        if (frame_idx == self.start_frame or
-            frame_idx % self.redetect_interval == 0 or
-            self.chest_tracker is None):
-            return self._initialize_frame(frame)
-
-        # PHASE 2: Tracking + Measurement
-        return self._track_and_measure(frame)
-    
-    def _initialize_frame(self, frame: np.ndarray) -> Optional[Dict]:
-        """
-        Initialize: detect hand, segment bird (optional), locate chest
-        """
-        # 1.1: Detect hand
-        hand_bbox, confidence, hand_mask = self.detector.detect(frame)
-
-        if hand_bbox is None:
-            return None
-
-        # 1.1b: Extract inner hand bbox (focuses on bird region, avoiding fingers/edges)
-        use_inner_bbox = self.config['detection'].get('use_inner_bbox', False)
-        analysis_bbox = hand_bbox  # Default to full hand bbox
-
-        if use_inner_bbox and hand_mask is not None:
-            inner_method = self.config['detection'].get('inner_bbox_method', 'percentile')
-            inner_margin = self.config['detection'].get('inner_bbox_margin', 0.15)
-            inner_erosion = self.config['detection'].get('inner_bbox_erosion', 3)
-
-            analysis_bbox = get_inner_hand_bbox(
-                hand_mask,
-                hand_bbox,
-                method=inner_method,
-                margin_ratio=inner_margin,
-                erosion_iterations=inner_erosion
-            )
-
-        # 1.2: Segment bird (optional) - use analysis_bbox (inner or full)
-        x, y, w, h = [int(v) for v in analysis_bbox]
-
-        bird_mask = None
-        if self.segmentation_enabled and self.segmenter is not None:
-            # Bird segmentation enabled - use traditional pipeline
-            analysis_region = frame[y:y+h, x:x+w]
-
-            # Extract hand mask in local coordinates if available
-            hand_mask_local = None
-            if hand_mask is not None:
-                hand_mask_local = hand_mask[y:y+h, x:x+w]
-
-            bird_mask_local = self.segmenter.segment(analysis_region, hand_mask_local=hand_mask_local)
-            bird_mask_local = self.segmenter.get_largest_component(bird_mask_local)
-
-            if np.sum(bird_mask_local) < 100:
-                return None
-
-            bird_mask = convert_mask_to_frame_coords(bird_mask_local, analysis_bbox, frame.shape)
-
-        # 1.3: Locate chest (pass frame and fps for advanced localizers)
-        # Use bird_mask if available, otherwise create mask from analysis_bbox
-        if bird_mask is not None:
-            analysis_mask = bird_mask
-
-            
-        elif hand_mask is not None:
-            # If using inner bbox, create a mask from the inner region
-            if use_inner_bbox:
-                print("USE INNER BBOX-> 366")
-                # Create mask for inner bbox region (more constrained than full hand)
-                analysis_mask = np.zeros_like(hand_mask)
-                ix, iy, iw, ih = [int(v) for v in analysis_bbox]
-                # Use the hand mask within the inner bbox region
-                analysis_mask[iy:iy+ih, ix:ix+iw] = hand_mask[iy:iy+ih, ix:ix+iw]
-
-                plt.imshow(hand_mask)
-                plt.title("Hand Mask")
-                plt.show()
-                plt.close()
-
-                plt.imshow(analysis_mask)
-                plt.title("Analysis Mask")
-                plt.show()
-                plt.close()
-            else:
-                print("DO NOT USE INNER BBOX-> 383")
-                # Use full hand mask
-                analysis_mask = hand_mask
-        else:
-            return None
-
-        if analysis_mask is None or np.sum(analysis_mask) < 100:
-            return None
-
-        chest_roi = self.localizer.locate(
-            analysis_mask,
-            hand_mask=hand_mask,
-            frame=frame,
-            fps=self.signal_processor.fps
-        )
-
-        if chest_roi is None:
-            return None
-        
-        debug_mode = False
-        
-        if debug_mode:
-
-            # DEBUG: Visualize chest ROI region
-            cx, cy, cw, ch = [int(v) for v in chest_roi]
-            chest_vis = frame.copy()
-
-            # Draw all three boxes
-            if hand_bbox is not None:
-                hx, hy, hw, hh = [int(v) for v in hand_bbox]
-                cv2.rectangle(chest_vis, (hx, hy), (hx+hw, hy+hh), (255, 0, 0), 2)  # Blue = hand
-
-            if use_inner_bbox:
-                ix, iy, iw, ih = [int(v) for v in analysis_bbox]
-                cv2.rectangle(chest_vis, (ix, iy), (ix+iw, iy+ih), (0, 255, 255), 2)  # Cyan = inner
-
-            cv2.rectangle(chest_vis, (cx, cy), (cx+cw, cy+ch), (0, 0, 255), 3)  # Red = chest
-
-            # Highlight the chest region with color overlay
-            overlay = chest_vis.copy()
-            overlay[cy:cy+ch, cx:cx+cw] = overlay[cy:cy+ch, cx:cx+cw] * 0.5 + np.array([0, 255, 0]) * 0.5
-            chest_vis = cv2.addWeighted(chest_vis, 0.7, overlay, 0.3, 0)
-
-            # Show with matplotlib
-            plt.figure(figsize=(12, 8))
-            plt.imshow(cv2.cvtColor(chest_vis, cv2.COLOR_BGR2RGB))
-            plt.title(f"Chest ROI Localization\nBlue=Hand, Cyan=Inner, Red+Green=Chest\nChest: {cw}x{ch} at ({cx},{cy})")
-            plt.axis('off')
-            plt.show()
-            plt.close()
-        
-        # 1.4: Initialize trackers
-        tracker_type = self.config['tracking']['hand_tracker']
-        self.hand_tracker = self._create_tracker(tracker_type)
-        hand_bbox_tuple = tuple(int(v) for v in hand_bbox)
-        self.hand_tracker.init(frame, hand_bbox_tuple)
-
-        tracker_type = self.config['tracking']['chest_tracker']
-        self.chest_tracker = self._create_tracker(tracker_type)
-        chest_roi_tuple = tuple(int(v) for v in chest_roi)
-        self.chest_tracker.init(frame, chest_roi_tuple)
-        
-        # Store state
-        self.prev_frame = frame.copy()
-        self.prev_hand_bbox = hand_bbox
-        self.measurement.reset()
-
-        # Append zero breathing for initialization frames
-        self.breathing_signal.append(0.0)
-
-        return {
-            'hand_bbox': hand_bbox,
-            'hand_confidence': confidence,
-            'inner_bbox': analysis_bbox if use_inner_bbox else None,  # NEW: for visualization
-            'bird_mask': bird_mask,
-            'chest_roi': chest_roi,
-            'breathing': 0.0,
-            'mode': 'detected'
-        }
-    
     def _track_and_measure(self, frame: np.ndarray) -> Optional[Dict]:
         """
-        Track ROIs and measure breathing
+        Advance the chest tracker by one frame and extract a breathing signal sample.
+
+        On each regular (non-initialization) frame, this method:
+            1. Updates ``self.chest_tracker`` with the new frame. If tracking
+               fails, falls back to ``_relocate_roi`` to re-detect and reinitialize.
+            2. Recenters the tracked bounding box: uses the tracker-reported
+               center but keeps the original ROI dimensions (``self.init_roi_w``,
+               ``self.init_roi_h``) to prevent size drift over time.
+            3. Extracts the chest region from the grayscale frame and passes it
+               to ``self.measurement.measure`` to compute a single breathing
+               signal value.
+            4. Appends the measurement to ``self.breathing_signal`` and updates
+               ``self.prev_frame``.
+
+        Args:
+            frame (np.ndarray): Current BGR video frame.
+
+        Returns:
+            dict or None: On success, a dict with keys:
+                - ``'chest_roi'`` (tuple[float,float,float,float]): ``(x, y, w, h)``
+                  of the shape-preserved chest ROI used for measurement.
+                - ``'breathing'`` (float): The breathing signal value for this
+                  frame (units depend on the configured measurement method).
+                - ``'mode'`` (str): ``'tracked'``.
+
+            If tracking fails, returns whatever ``_relocate_roi`` returns
+            (i.e. a ``'detected'`` result dict).
         """
         # 2.1: Track chest
-        success_chest, chest_roi = self.chest_tracker.update(frame)
+        success_chest, tracked_roi = self.chest_tracker.update(frame)
 
         if not success_chest:
-            # Tracking failed - re-initialize
-            print("  [Tracking lost - re-initializing]")
-            return self._initialize_frame(frame)
+            print("TRACKER WAS NOT SUCCESFUL!!! > gotta try to relocate_roi!")
+            return self._relocate_roi(frame)        
+        
+        # keep the ROI shape consistent, gonna use the received chest_roi CENTER
+        # Success: Extract center from tracker output and preserve original dimensions
+        tx, ty, tw, th = tracked_roi
+        # Calculate center of tracked ROI
+        center_x = tx + tw / 2
+        center_y = ty + th / 2
+        # Build new ROI with original dimensions centered at tracked position
+        new_x = center_x - self.init_roi_w / 2
+        new_y = center_y - self.init_roi_h / 2
+        chest_roi = (new_x, new_y, self.init_roi_w, self.init_roi_h)
 
-        # 2.2: Track hand (needed for stabilization or visualization)
-        # Only track if stabilization is enabled or visualization shows hand bbox
-        hand_bbox = None
-        if self.stabilizer is not None:
-            success_hand, hand_bbox = self.hand_tracker.update(frame)
-            if not success_hand:
-                # Hand tracking failed - re-initialize
-                print("  [Hand tracking lost - re-initializing]")
-                return self._initialize_frame(frame)
 
-        # 2.3: Stabilization (optional)
+    
+        # 2.4: Measure breathing
+
         cx, cy, cw, ch = [int(v) for v in chest_roi]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         chest_region = gray[cy:cy+ch, cx:cx+cw]
 
-        if self.stabilizer is not None:
-            chest_stabilized = self.stabilizer.stabilize(
-                chest_region,
-                frame=frame,
-                hand_bbox=hand_bbox,
-                prev_hand_bbox=self.prev_hand_bbox,
-                prev_frame=self.prev_frame
-            )
-        else:
-            chest_stabilized = chest_region
-        
-        # 2.4: Measure breathing
-        breathing = self.measurement.measure(chest_stabilized)
+
+        breathing = self.measurement.measure(chest_region)
         
         self.breathing_signal.append(breathing)
         
         # Update state
         self.prev_frame = frame.copy()
-        self.prev_hand_bbox = hand_bbox
+        #self.prev_hand_bbox = hand_bbox
         
         return {
-            'hand_bbox': hand_bbox,
+            #'hand_bbox': hand_bbox,
             'chest_roi': chest_roi,
             'breathing': breathing,
             'mode': 'tracked'
@@ -534,171 +897,44 @@ class BreathingAnalyzer:
         else:
             return cv2.TrackerKCF_create()
     
-    def _visualize_frame(self, frame: np.ndarray, result: Dict, frame_idx: int = 0,
-                        breath_count: int = 0, current_rate: float = 0.0,
-                        breath_detected: bool = False) -> np.ndarray:
-        """
-        Visualize detection/tracking results with breath count
-
-        Args:
-            breath_detected: If True, highlights chest ROI to show breath was detected
-        """
-        vis = frame.copy()
-
-        # Text positioning - left side with proper spacing
-        left_x = 10
-        y_pos = 30
-        line_spacing = 35
-
-        # Line 1: Breath count
-        breath_text = f"Breaths: {breath_count}"
-        cv2.putText(vis, breath_text, (left_x, y_pos),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        y_pos += line_spacing
-
-        # Line 2: Current breathing rate
-        if current_rate > 0:
-            rate_text = f"Rate: {current_rate:.1f} BPM"
-            cv2.putText(vis, rate_text, (left_x, y_pos),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            y_pos += line_spacing
-
-        # Line 3: Current signal value
-        if 'breathing' in result:
-            signal_text = f"Signal: {result['breathing']:.2f}"
-            cv2.putText(vis, signal_text, (left_x, y_pos),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 2)
-            y_pos += line_spacing
-
-        # Line 4: Mode
-        if 'mode' in result:
-            mode_text = f"Mode: {result['mode']}"
-            cv2.putText(vis, mode_text, (left_x, y_pos),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-        # Frame number in top-right corner
-        frame_text = f"Frame: {frame_idx}"
-        text_size = cv2.getTextSize(frame_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
-        text_x = vis.shape[1] - text_size[0] - 10
-        cv2.putText(vis, frame_text, (text_x, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-        # Draw hand bbox (blue)
-        if 'hand_bbox' in result and result['hand_bbox'] is not None:
-            x, y, w, h = [int(v) for v in result['hand_bbox']]
-            cv2.rectangle(vis, (x, y), (x+w, y+h), (255, 0, 0), 2)
-
-            label = "Hand"
-            if 'hand_confidence' in result:
-                label += f" {result['hand_confidence']:.2f}"
-
-            cv2.putText(vis, label, (x, y-10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-
-        # Draw inner bbox (yellow/cyan) - shows the reduced search region
-        if 'inner_bbox' in result and result['inner_bbox'] is not None:
-            ix, iy, iw, ih = [int(v) for v in result['inner_bbox']]
-            cv2.rectangle(vis, (ix, iy), (ix+iw, iy+ih), (0, 255, 255), 2)
-            cv2.putText(vis, "Inner", (ix, iy-10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-
-        # Draw chest ROI with breath detection visual feedback
-        if 'chest_roi' in result:
-            cx, cy, cw, ch = [int(v) for v in result['chest_roi']]
-
-            # Change color and thickness when breath is detected
-            if breath_detected:
-                # Yellow (BGR: 0, 255, 255) and thicker when breath detected
-                roi_color = (0, 255, 255)
-                roi_thickness = 4
-            else:
-                # Red (BGR: 0, 0, 255) and normal thickness otherwise
-                roi_color = (0, 0, 255)
-                roi_thickness = 2
-
-            cv2.rectangle(vis, (cx, cy), (cx+cw, cy+ch), roi_color, roi_thickness)
-
-            # Draw "Chest" label above the box
-            cv2.putText(vis, "Chest", (cx, cy-10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, roi_color, 2)
-
-            # Draw breath count inside the box (top-left corner)
-            count_text = f"#{breath_count}"
-            # Position it inside the box with some padding
-            count_x = cx + 5
-            count_y = cy + 25
-            cv2.putText(vis, count_text, (count_x, count_y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, roi_color, 2)
-
-        return vis
-
-    def _update_breath_count(self, current_frame: int, fps: float):
-        """
-        Update breath count in real-time using simple peak detection
-
-        Uses configurable thresholds from config:
-        - min_signal_length: Minimum frames needed before detection
-        - peak_threshold_ratio: Height threshold (ratio of signal range above mean)
-        - max_breathing_rate: Maximum BPM (sets minimum distance between peaks)
-        """
-        # Need minimum signal length for meaningful detection
-        if len(self.breathing_signal) < self.min_signal_length:
-            return
-
-        # Initialize threshold on first call (recalculate periodically)
-        # Use ROBUST statistics (median, percentiles) to avoid outlier influence
-        if self.peak_threshold is None or len(self.breathing_signal) % 30 == 0:
-            signal_array = np.array(self.breathing_signal)
-
-            # Use median instead of mean (robust to outliers)
-            signal_median = np.median(signal_array)
-
-            # Use percentile range instead of full range (robust to outliers)
-            # 10th to 90th percentile covers normal breathing range
-            p10 = np.percentile(signal_array, 10)
-            p90 = np.percentile(signal_array, 90)
-            robust_range = p90 - p10
-
-            # Peak must be above: median + (threshold_ratio * robust_range)
-            self.peak_threshold = signal_median + robust_range * self.peak_threshold_ratio
-
-        # Check if current value is a peak
-        current_value = self.breathing_signal[-1]
-
-        # Simple peak detection: current value is high and higher than neighbors
-        if len(self.breathing_signal) >= 3:
-            prev_value = self.breathing_signal[-2]
-            prev_prev_value = self.breathing_signal[-3]
-
-            # Peak conditions:
-            # 1. Current value above threshold (amplitude requirement)
-            # 2. Current value is local maximum (shape requirement)
-            # 3. Enough frames since last peak (temporal requirement - prevent double counting)
-            min_distance = int(fps / (self.max_breathing_rate / 60))
-
-            is_above_threshold = current_value > self.peak_threshold
-            is_local_max = current_value > prev_value and prev_value >= prev_prev_value
-            enough_distance = (current_frame - self.last_peak_frame) >= min_distance
-
-            if is_above_threshold and is_local_max and enough_distance:
-                self.breath_count += 1
-                self.last_peak_frame = current_frame
-
-                # Trigger visual flash for 8 frames (~0.25s at 30fps)
-                self.breath_flash_frames = 8
-
-                # Mark this frame for audio beep (current_frame is already relative to processing start)
-                self.beep_frames.append(current_frame)
-
-                # Update breathing rate estimate (running average)
-                if self.breath_count >= 2:
-                    elapsed_time = (current_frame - self.start_frame) / fps
-                    self.current_rate_bpm = (self.breath_count / elapsed_time) * 60
-
     def _collect_metadata(self, frame: np.ndarray, audio_level: float = 0.0,
                          hand_bbox: Optional[tuple] = None, chest_roi: Optional[tuple] = None):
         """
-        Collect frame metadata (brightness, motion, audio, hand/chest motion)
+        Compute and accumulate per-frame quality/diagnostic metadata.
+
+        Called once per processed frame (after tracking/measurement) to build
+        parallel arrays in ``self.metadata`` that can later be used for signal
+        quality analysis, outlier filtering, or debugging.
+
+        The following metrics are appended on every call:
+            - ``'brightness'``: Mean pixel intensity of the grayscale frame.
+            - ``'brightness_change'``: Absolute mean-intensity difference from
+              the previous frame (``0.0`` on the first call).
+            - ``'motion'``: Mean per-pixel absolute difference between consecutive
+              grayscale frames — a proxy for global camera/scene motion
+              (``0.0`` on the first call).
+            - ``'audio_level'``: Pre-computed RMS energy value for this frame,
+              passed in from the caller (``0.0`` if audio is unavailable).
+            - ``'hand_motion'``: Euclidean distance (pixels) the hand bbox
+              center moved since the last frame. ``0.0`` if ``hand_bbox`` is
+              ``None`` or on the first frame with a hand.
+            - ``'chest_motion'``: Euclidean distance (pixels) the chest ROI
+              center moved since the last frame. ``0.0`` if ``chest_roi`` is
+              ``None`` or on the first frame with a chest ROI.
+
+        Side effects:
+            - Appends one value to each of the six lists in ``self.metadata``.
+            - Updates ``self.prev_frame_gray``, ``self.prev_hand_center``, and
+              ``self.prev_chest_center`` for the next frame's delta computations.
+
+        Args:
+            frame (np.ndarray): Current BGR video frame.
+            audio_level (float): Pre-computed RMS audio energy for this frame.
+                Defaults to ``0.0``.
+            hand_bbox (tuple[int,int,int,int] or None): Hand bounding box as
+                ``(x, y, w, h)``. Pass ``None`` when not available.
+            chest_roi (tuple[int,int,int,int] or None): Chest ROI as
+                ``(x, y, w, h)``. Pass ``None`` when not available.
         """
         # Convert to grayscale for analysis
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -761,7 +997,39 @@ class BreathingAnalyzer:
 
     def _extract_audio(self, video_path: str, fps: float) -> np.ndarray:
         """
-        Extract audio from video and compute RMS energy per frame
+        Extract the audio track from a video file and compute per-frame RMS energy.
+
+        Uses ``ffmpeg`` (via subprocess) to decode the audio into a temporary
+        mono 16-bit PCM WAV file at 44 100 Hz. The PCM samples are then
+        normalized to ``[-1, 1]`` and chunked into segments that correspond to
+        individual video frames, with the root-mean-square (RMS) energy computed
+        for each chunk.
+
+        The resulting array can be used as a proxy for ambient noise or handling
+        events (e.g. the bird being disturbed) and is stored per frame in
+        ``self.metadata['audio_level']`` via ``_collect_metadata``.
+
+        Steps:
+            1. Spawn ``ffmpeg`` to demux and decode the audio stream into a
+               temporary ``.wav`` file (mono, 16-bit, 44 100 Hz).
+            2. Read the WAV samples with the standard-library ``wave`` module
+               and unpack them with ``struct``.
+            3. Normalize samples to ``[-1.0, 1.0]``.
+            4. Slice into per-frame windows of ``sample_rate / fps`` samples and
+               compute the RMS of each window.
+            5. Delete the temporary WAV file.
+
+        Args:
+            video_path (str): Absolute or relative path to the source video file.
+            fps (float): Video frame rate, used to determine the number of audio
+                samples per video frame.
+
+        Returns:
+            np.ndarray: 1-D float32 array of length ≈ ``total_video_frames``,
+                where each element is the RMS audio energy in ``[0, 1]`` for the
+                corresponding video frame. Returns an empty array
+                (``np.array([])``) if ``ffmpeg`` is unavailable, the video has
+                no audio track, or any other exception occurs.
         """
         try:
             import subprocess
@@ -817,134 +1085,3 @@ class BreathingAnalyzer:
         except Exception as e:
             print(f"  Warning: Audio extraction failed: {e}")
             return np.array([])
-
-    def _add_beeps_to_video(self, video_path: str, original_video_path: str,
-                            fps: float, total_frames: int):
-        """
-        Add audio beeps to the output video at frames where breaths were detected
-
-        Args:
-            video_path: Path to the video file (will be replaced with version containing beeps)
-            original_video_path: Path to original video (for extracting original audio)
-            fps: Video frame rate
-            total_frames: Total number of frames processed
-        """
-        try:
-            import subprocess
-            import tempfile
-            import wave
-            import os
-
-            print(f"  Generating beep audio track...")
-            print(f"  Beep frames: {self.beep_frames[:5]}{'...' if len(self.beep_frames) > 5 else ''}")
-
-            # Generate beep audio track
-            sample_rate = 44100
-            beep_freq = 800  # Hz (A5 note - pleasant beep sound)
-            beep_duration = 0.15  # seconds
-            beep_samples = int(sample_rate * beep_duration)
-
-            # Create beep waveform (sine wave with envelope)
-            t = np.linspace(0, beep_duration, beep_samples)
-            beep = np.sin(2 * np.pi * beep_freq * t)
-
-            # Apply envelope (fade in/out) to avoid clicks
-            envelope = np.hanning(beep_samples)
-            beep = beep * envelope * 0.5  # 0.5 = volume
-
-            # Create full audio track
-            samples_per_frame = int(sample_rate / fps)
-            total_samples = total_frames * samples_per_frame
-            audio_track = np.zeros(total_samples, dtype=np.float32)
-
-            print(f"  Audio track: {total_samples} samples ({total_samples/sample_rate:.2f}s)")
-
-            # Add beeps at specified frames
-            for frame_idx in self.beep_frames:
-                # Skip negative frame indices (shouldn't happen but safety check)
-                if frame_idx < 0:
-                    continue
-
-                start_sample = frame_idx * samples_per_frame
-                end_sample = start_sample + beep_samples
-
-                if end_sample <= total_samples:
-                    audio_track[start_sample:end_sample] += beep
-
-            # Clip to [-1, 1] range
-            audio_track = np.clip(audio_track, -1.0, 1.0)
-
-            # Convert to 16-bit PCM
-            audio_pcm = (audio_track * 32767).astype(np.int16)
-
-            # Write beep audio to temporary WAV file
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-                beep_audio_path = tmp.name
-
-            with wave.open(beep_audio_path, 'wb') as wav:
-                wav.setnchannels(1)  # Mono
-                wav.setsampwidth(2)  # 16-bit
-                wav.setframerate(sample_rate)
-                wav.writeframes(audio_pcm.tobytes())
-
-            # Create temporary output file
-            temp_output = video_path.replace('.mp4', '_temp.mp4')
-
-            # Try to extract original audio and mix with beeps
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-                original_audio_path = tmp.name
-
-            # Extract original audio (accounting for start_frame offset)
-            start_time = self.start_frame / fps
-            duration = total_frames / fps
-
-            extract_cmd = [
-                'ffmpeg', '-i', original_video_path,
-                '-ss', str(start_time), '-t', str(duration),
-                '-vn', '-acodec', 'pcm_s16le',
-                '-ar', '44100', '-ac', '1', '-y', original_audio_path
-            ]
-
-            result = subprocess.run(extract_cmd, capture_output=True, text=True)
-
-            if result.returncode == 0 and os.path.exists(original_audio_path):
-                # Mix original audio with beeps
-                mix_cmd = [
-                    'ffmpeg', '-i', video_path, '-i', original_audio_path,
-                    '-i', beep_audio_path,
-                    '-filter_complex', '[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0[aout]',
-                    '-map', '0:v', '-map', '[aout]',
-                    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
-                    '-y', temp_output
-                ]
-            else:
-                # No original audio - just add beeps
-                mix_cmd = [
-                    'ffmpeg', '-i', video_path, '-i', beep_audio_path,
-                    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
-                    '-shortest', '-y', temp_output
-                ]
-
-            print(f"  Running ffmpeg to mix audio...")
-            result = subprocess.run(mix_cmd, capture_output=True, text=True)
-
-            if result.returncode == 0:
-                # Replace original file with version containing beeps
-                os.replace(temp_output, video_path)
-                print(f"  ✓ Audio beeps added successfully")
-            else:
-                print(f"  ⚠ Warning: Could not add beeps (ffmpeg error)")
-                print(f"  Error output: {result.stderr[:500]}")  # First 500 chars
-                if os.path.exists(temp_output):
-                    os.remove(temp_output)
-
-            # Cleanup temp files
-            if os.path.exists(beep_audio_path):
-                os.remove(beep_audio_path)
-            if os.path.exists(original_audio_path):
-                os.remove(original_audio_path)
-
-        except Exception as e:
-            import traceback
-            print(f"  ⚠ Warning: Could not add audio beeps: {e}")
-            print(f"  Traceback: {traceback.format_exc()[:500]}")
