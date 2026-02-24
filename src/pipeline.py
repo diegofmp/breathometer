@@ -690,12 +690,13 @@ class BreathingAnalyzer:
 
         # Process frames
         if self.start_frame > 0:
-            frame_idx = self.start_frame - self.buffer_frames_size
+            self.frame_idx = self.start_frame - self.buffer_frames_size
         else:
-            frame_idx = self.start_frame
+            self.frame_idx = self.start_frame
         
         frames_processed = 0
         self.breathing_signal = []
+        self.breathing_signal_info = []
         self.tracking_status = []
         self.metadata = {
             'brightness': [],
@@ -730,13 +731,13 @@ class BreathingAnalyzer:
 
                 # Still just buffering
                 self.buffer_frames.append(frame)
-                if frame_idx<self.start_frame:
-                    frame_idx+=1                    
+                if self.frame_idx<self.start_frame:
+                    self.frame_idx+=1                    
                     continue
 
                 if self.manual_mode:
                     # If manual mode, prompt manual ROI only once to init tracker
-                    if frame_idx == self.start_frame:
+                    if self.frame_idx == self.start_frame:
                         manual_chest_roi, confidence, chest_mask = self.detector.detect(frame)
                         print("MANUAL CHEST ROI:  ", manual_chest_roi)
                         bx, by, bw, bh = manual_chest_roi
@@ -750,11 +751,11 @@ class BreathingAnalyzer:
                         self._initialize_tracker(frame, manual_chest_roi)                    
                 else:
                     # (RE)Initialization (first frame, periodic re-detection, or trackers not initialized)
-                    should_locate_roi = frame_idx == self.start_frame or (self.redetect_interval > 0 and frame_idx % self.redetect_interval == 0) or self.chest_tracker is None
+                    should_locate_roi = self.frame_idx == self.start_frame or (self.redetect_interval > 0 and self.frame_idx % self.redetect_interval == 0) or self.chest_tracker is None
 
                     if should_locate_roi:
                         self._relocate_roi(frame)
-                        frame_idx+=1
+                        self.frame_idx+=1
                         continue
                 
                 # Tracking + Measurement
@@ -771,14 +772,14 @@ class BreathingAnalyzer:
                 tracker_status= result.get('mode') if result else None
 
                 if tracker_status is not None and tracker_status== 'detected':
-                    print(f"Tracked failed to track ROI at frame {frame_idx} and was REINITIALIZED")
+                    print(f"Tracked failed to track ROI at frame {self.frame_idx} and was REINITIALIZED")
 
                 self._collect_metadata(frame, audio_level, hand_bbox, chest_roi)
 
                 # Record tracking status
                 self.tracking_status.append(1 if result is not None else 0)
 
-                frame_idx += 1
+                self.frame_idx += 1
                 frames_processed += 1
                 pbar.update(1)
         
@@ -804,7 +805,7 @@ class BreathingAnalyzer:
             'frequency_hz': info.get('frequency_hz', 0.0),
             'signal_length': len(self.breathing_signal),
             'video_fps': fps,
-            'total_frames': frame_idx,
+            'total_frames': self.frame_idx,
             'breathing_signal': self.breathing_signal,
             'tracking_status': self.tracking_status,
             'metadata': self.metadata,
@@ -871,9 +872,16 @@ class BreathingAnalyzer:
         chest_region = gray[cy:cy+ch, cx:cx+cw]
 
 
-        breathing = self.measurement.measure(chest_region)
-        
+        breathing, info = self.measurement.measure(chest_region)
+
+        # Store measurement with metadata
         self.breathing_signal.append(breathing)
+        self.breathing_signal_info.append({
+            'frame_idx': self.frame_idx,
+            'breathing_value': breathing,
+            'chest_roi': chest_roi,
+            **info  # Unpack quality, reason, shape info, etc.
+        })
         
         # Update state
         self.prev_frame = frame.copy()
@@ -1085,3 +1093,60 @@ class BreathingAnalyzer:
         except Exception as e:
             print(f"  Warning: Audio extraction failed: {e}")
             return np.array([])
+
+    def analyze_measurement_quality(self) -> Dict:
+        """
+        Analyze the quality metrics from breathing_signal_info
+
+        Returns:
+            dict: Summary statistics about measurement quality including:
+                - total_frames: Total number of measurements
+                - valid_frames: Number of valid measurements
+                - invalid_frames: Number of invalid measurements
+                - shape_mismatch_count: Frames where ROI shape changed
+                - initialization_count: Frames at initialization
+                - invalid_frame_indices: List of frame indices with invalid measurements
+                - invalid_details: Detailed info about each invalid frame
+        """
+        if not self.breathing_signal_info:
+            return {
+                'error': 'No measurement info available. Run process_video first.'
+            }
+
+        total = len(self.breathing_signal_info)
+        valid_count = 0
+        invalid_count = 0
+        shape_mismatch_count = 0
+        initialization_count = 0
+        invalid_details = []
+
+        for info in self.breathing_signal_info:
+            if info.get('quality') == 'valid':
+                valid_count += 1
+            else:
+                invalid_count += 1
+                reason = info.get('reason', 'unknown')
+
+                if reason == 'shape_mismatch':
+                    shape_mismatch_count += 1
+                elif reason == 'initialization':
+                    initialization_count += 1
+
+                invalid_details.append({
+                    'frame_idx': info['frame_idx'],
+                    'reason': reason,
+                    'prev_shape': info.get('prev_shape'),
+                    'curr_shape': info.get('curr_shape'),
+                    'breathing_value': info['breathing_value']
+                })
+
+        return {
+            'total_frames': total,
+            'valid_frames': valid_count,
+            'invalid_frames': invalid_count,
+            'valid_percentage': (valid_count / total * 100) if total > 0 else 0.0,
+            'shape_mismatch_count': shape_mismatch_count,
+            'initialization_count': initialization_count,
+            'invalid_frame_indices': [d['frame_idx'] for d in invalid_details],
+            'invalid_details': invalid_details
+        }

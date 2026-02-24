@@ -88,22 +88,35 @@ class OpticalFlowDivergenceRobustMeasurement:
         
         return u_x - rigid_u_x, u_y - rigid_u_y
 
-    def measure(self, chest_region: np.ndarray, removal_type: str="affine") -> float:
+    def measure(self, chest_region: np.ndarray, removal_type: str="affine"):
         """
         Args:
             chest_region: current mask/image area
             removal_type: 'median' for simple translation, 'affine' for translation+rotation+scaling
+
+        Returns:
+            tuple: (breathing_value, metadata_dict)
+                - breathing_value (float): The measured breathing signal value
+                - metadata_dict (dict): Contains quality info and diagnostics
         """
         if self.prev_chest is None or self.prev_chest.shape != chest_region.shape:
+            # Build metadata for invalid measurement
+            metadata = {
+                'quality': 'invalid',
+                'reason': 'shape_mismatch' if self.prev_chest is not None else 'initialization',
+                'prev_shape': None if self.prev_chest is None else self.prev_chest.shape,
+                'curr_shape': chest_region.shape
+            }
+
             if self.prev_chest is None:
                 print("self.prev_chest is None")
             else:
                 print("self.prev_chest.shape: ", self.prev_chest.shape)
                 print("chest_region.shape: ", chest_region.shape)
                 print("inconsistent prev and new chest regions!!!")
-            
+
             self.prev_chest = chest_region.copy()
-            return 0.0
+            return 0.0, metadata
 
         # 1. Optical flow
         flow = cv2.calcOpticalFlowFarneback(
@@ -214,13 +227,30 @@ class OpticalFlowDivergenceRobustMeasurement:
 
             breathing = validated_breathing
 
+            # Build metadata for successful measurement
+            metadata = {
+                'quality': 'valid' if is_valid else 'invalid',
+                'shape': chest_region.shape,
+                'breathing_raw': float(breathing),
+                'was_validated': self.use_validation,
+                'validator_metrics': validator_metrics if is_valid else ''
+            }
+
         else:
             # No validation - always update last valid value
             self.last_valid_breathing = breathing
 
+            # Build metadata for successful measurement
+            metadata = {
+                'quality': 'valid',
+                'shape': chest_region.shape,
+                'breathing_raw': float(breathing),
+                'was_validated': self.use_validation
+            }
+
         self.prev_chest = chest_region.copy()
         #print("Updated self.prev_chest.shape: ", self.prev_chest.shape)
-        return float(breathing)
+        return float(breathing), metadata
     
     def post_processing(self, raw_signal):
         """
