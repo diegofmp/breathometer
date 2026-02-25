@@ -986,31 +986,38 @@ class SignalProcessor:
             if autocorr[0] != 0:
                 autocorr = autocorr / autocorr[0]
 
-            # Calculate valid lag range
-            min_lag = int((60.0 / self.acf_max_bpm) * fps)
-            max_lag = int((60.0 / self.acf_min_bpm) * fps)
+            # Calculate valid lag range from configured BPM bounds
+            min_lag = max(1, int(round((60.0 / self.acf_max_bpm) * fps)))
+            max_lag = int(round((60.0 / self.acf_min_bpm) * fps))
 
-
-            #update 02. # Add some slight room 
-            search_min_lag = max(1, int(min_lag * 0.9))
-            search_max_lag = int(max_lag * 1.1)
+            # Extend the lower bound by exactly 1 sample so the fundamental is
+            # always at position ≥ 1 in valid_autocorr: find_peaks cannot detect
+            # a local maximum at position 0 because it has no left neighbour.
+            # The old 0.9 factor gave a multi-sample extension, which — combined
+            # with distance=0.8*min_lag — let find_peaks suppress the fundamental
+            # whenever spurious ACF energy existed in that extension region.
+            # A fixed 1-sample extension + distance=min_lag avoids both problems:
+            # the fundamental is always visible to find_peaks, and it beats any
+            # sub-period noise via the distance-deduplication (ACF[min_lag-1] is
+            # on the rising slope toward the peak, so it's always shorter).
+            search_min_lag = max(1, min_lag - 1)
+            search_max_lag = min(len(autocorr) - 1, int(round(max_lag * 1.1)))
 
             if len(window) < max_lag:
                 continue
 
-            #valid_autocorr = autocorr[min_lag:max_lag+1]
-            #valid_lags = np.arange(min_lag, max_lag+1)
-
             valid_autocorr = autocorr[search_min_lag : search_max_lag + 1]
             valid_lags = np.arange(search_min_lag, search_max_lag + 1)
 
-            # Find peaks
+            # Find peaks — distance=min_lag is the theoretically correct value:
+            # ACF harmonics are spaced exactly min_lag apart, so this prevents
+            # adjacent harmonics from both surviving while still allowing the
+            # fundamental to be found at any lag in [min_lag, max_lag].
             from scipy.signal import find_peaks
             peaks, properties = find_peaks(
                 valid_autocorr,
                 prominence=self.acf_min_prominence,
-                #distance=min_lag
-                distance = int(min_lag * 0.8) # Tweaks 02.21
+                distance=min_lag,
             )
 
             if len(peaks) == 0:
