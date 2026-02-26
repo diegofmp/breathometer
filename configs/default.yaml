@@ -27,43 +27,6 @@ tracking:
 
 # Signal Processing
 signal_processing:
-  fps: 30  # Will be auto-detected from video
-
-  # Preprocessing pipeline (applied to raw signal before bandpass filter)
-  # Order is fixed: savgol -> detrend -> nonlinear_amplification -> normalize
-  preprocessing:
-    # 1. Savitzky-Golay smoothing — preserves breath peaks while removing sensor noise
-    savgol:
-      enabled: true
-      window_size: 5  # Must be odd number; small values (7-11) keep spikes sharp
-      polyorder: 2     # Polynomial order (lower = more smoothing)
-
-    # 2. Detrend — removes slow baseline drift caused by handling / wiggling
-    detrend:
-      enabled: true
-      method: 'linear'  # Options: linear, constant
-
-    # 3. Nonlinear amplification — squares (or TKEO-amplifies) the signal so that
-    #    breath spikes become much taller than leftover noise
-    nonlinear_amplification:
-      enabled: false
-      method: 'tkeo'  # Options: tkeo (Teager-Kaiser, recommended), square (x^2)
-
-    # 4. Normalization — rescales after the nonlinearity changed the distribution
-    normalize:
-      enabled: true
-      method: 'zscore'  # Options: zscore, minmax, robust
-
-    outlier_clip:
-      std_threshold: 3
-
-# Bandpass Filter 
-  # Bandpass filter (main frequency filtering)
-  bandpass_filter:
-    low_freq: 1.0   # Hz (90 BPM) - 5 BPM margin below minimum
-    high_freq: 9.0  # Hz (312 BPM) - 11 BPM margin above maximum
-    order: 2
-
   # Real-time breath counting parameters
   breath_counting:
     method: 'autocorrelation_windowed'  # Options: 'emv_phase', 'fft_frequency', 'fft_windowed', 'autocorrelation', "autocorrelation_windowed"

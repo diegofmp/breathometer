@@ -132,31 +132,6 @@ def normalize_signal(signal_data: np.ndarray, method: str = 'zscore') -> np.ndar
     return signal_data
 
 
-def nonlinear_amplification(signal_data: np.ndarray, method: str = 'tkeo') -> np.ndarray:
-    """
-    Apply nonlinear amplification to emphasise breathing spikes over residual noise.
-
-    Args:
-        signal_data: Input signal (should already be detrended / zero-mean)
-        method: 'tkeo' (Teager-Kaiser Energy Operator) or 'square'
-
-    Returns:
-        Amplified signal
-    """
-    if method == 'square':
-        return signal_data ** 2
-
-    # Teager-Kaiser Energy Operator: y[n] = x[n]^2 - x[n-1]*x[n+1]
-    # Amplifies both amplitude *and* instantaneous frequency, making
-    # breath events stand out more than plain squaring.
-    y = np.zeros_like(signal_data)
-    y[1:-1] = signal_data[1:-1] ** 2 - signal_data[:-2] * signal_data[2:]
-    # Boundary: fall back to plain squaring at the edges
-    y[0] = signal_data[0] ** 2
-    y[-1] = signal_data[-1] ** 2
-    return y
-
-
 def interpolate_nans(signal_data: np.ndarray) -> tuple[np.ndarray, int]:
     """
     Handle NaN values in signal using linear interpolation

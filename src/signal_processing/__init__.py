@@ -14,7 +14,6 @@ from .utils import (
     remove_outliers,
     apply_savgol_filter,
     normalize_signal,
-    nonlinear_amplification,
     interpolate_nans
 )
 
@@ -30,8 +29,8 @@ class SignalProcessor:
 
         filter_config = config.get('bandpass_filter', {})
         self.low_freq = filter_config.get('low_freq', 1.5)
-        self.high_freq = filter_config.get('high_freq', 5.0)
-        self.order = filter_config.get('order', 4)
+        self.high_freq = filter_config.get('high_freq', 8.0)
+        self.order = filter_config.get('order', 2)
 
         # Load preprocessing config
         self.preprocess_config = config.get('preprocessing', {})
@@ -1266,10 +1265,6 @@ class SignalProcessor:
         """Normalize signal - delegates to utility function"""
         return normalize_signal(signal_data, method)
 
-    def _nonlinear_amplification(self, signal_data: np.ndarray, method: str = 'tkeo') -> np.ndarray:
-        """Apply nonlinear amplification - delegates to utility function"""
-        return nonlinear_amplification(signal_data, method)
-
     def _preprocess_for_fft(self, raw_signal: np.ndarray, fps: float) -> np.ndarray:
         """
         Surgical preprocessing for Spectral Analysis.
@@ -1372,20 +1367,12 @@ class SignalProcessor:
             savgol_config = self.preprocess_config.get('savgol', {})
             if savgol_config.get('enabled', True):
                 # For 300 BPM at 30fps, window 5-7 is best for the integrated wave
-                window_size = savgol_config.get('window_size', 7)
+                window_size = savgol_config.get('window_size', 5)
                 polyorder  = savgol_config.get('polyorder', 2)
                 processed  = self._savgol_filter(processed, window_size, polyorder)
                 info['after_savgol'] = processed.copy()
 
-        # 6. Nonlinear amplification (OPTIONAL - suggest keeping DISABLED)
-        # Integration usually makes the signal so clean you don't need TKEO
-        nonlinear_config = self.preprocess_config.get('nonlinear_amplification', {})
-        if nonlinear_config.get('enabled', False):
-            method   = nonlinear_config.get('method', 'tkeo')
-            processed = self._nonlinear_amplification(processed, method)
-            info['after_nonlinear'] = processed.copy()
-
-        # 7. Normalize
+        # 6. Normalize
         normalize_config = self.preprocess_config.get('normalize', {})
         if normalize_config.get('enabled', True):
             method   = normalize_config.get('method', 'zscore')
