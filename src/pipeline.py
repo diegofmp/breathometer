@@ -362,7 +362,7 @@ class BreathingAnalyzer:
 
         if has_batch_support:
             # --- BATCH INFERENCE (FAST PATH) ---
-            print(f"Running batch inference on {len(frames_to_process)} frames...")
+            #print(f"Running batch inference on {len(frames_to_process)} frames...")
 
             # Batch hand detection (single forward pass)
             hand_detections = self.detector.detect_batch(frames_to_process)
@@ -575,7 +575,7 @@ class BreathingAnalyzer:
         if not found_any_mask:
             raise Exception(f"Could not locate any bird in the last {min_elements} frames!. Can not rely on bird segmentator. Disable it")
         
-        print(f"Detection results. BIRD masks: {len(buffer_masks_birds)}, HAND masks: {len(buffer_masks_hands)}")
+        #print(f"Detection results. BIRD masks: {len(buffer_masks_birds)}, HAND masks: {len(buffer_masks_hands)}")
         agg_mask_bird, agg_mask_hand = self._aggregate_masks(bird_masks=buffer_masks_birds, hand_masks=buffer_masks_hands)
 
         # Locate ROI based on the movement within the clean bird mask

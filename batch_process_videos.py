@@ -26,7 +26,7 @@ def process_directory(directory, config_path, output_csv, output_videos_dir=None
     Args:
         directory: Path to directory containing videos
         config_path: Path to config file
-        output_csv: Path to output CSV file
+        output_csv: Path to output CSV file (or directory, will create results.csv inside)
         output_videos_dir: Directory to save processed videos (optional)
         video_extensions: List of video file extensions to process
         recursive: Whether to search subdirectories recursively
@@ -36,6 +36,14 @@ def process_directory(directory, config_path, output_csv, output_videos_dir=None
     """
     if video_extensions is None:
         video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.MP4', '.AVI', '.MOV']
+
+    # Handle case where output_csv is a directory
+    output_csv_path = Path(output_csv)
+    if output_csv_path.is_dir() or (not output_csv_path.suffix and not output_csv_path.exists()):
+        # If it's a directory or has no extension, create a CSV file inside it
+        output_csv_path = output_csv_path / 'results.csv'
+        output_csv = str(output_csv_path)
+        print(f"Note: Output path is a directory, saving to: {output_csv}")
 
     # Find all video files
     directory = Path(directory)
