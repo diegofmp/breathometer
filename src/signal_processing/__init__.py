@@ -151,7 +151,13 @@ class SignalProcessor:
             # Method provides its own BPM estimate (FFT, EMV, adaptive peak)
             breathing_rate_bpm = breath_count_info['breathing_rate_bpm']
             # Use method's confidence if available
-            confidence = breath_count_info.get('confidence', 0.0)
+
+            if 'quality' in breath_count_info:
+                confidence = breath_count_info['quality'].get('overall_score', 0.0)
+            else:
+                confidence = breath_count_info.get('mean_confidence', 0.0)
+
+            
         elif self.counting_method == 'adaptive_window':
             # Adaptive windowing: compute BPM from breath count
             signal_duration_minutes = len(breathing_signal) / fps / 60.0
@@ -222,6 +228,7 @@ class SignalProcessor:
             info['bpm_range'] = breath_count_info.get('bpm_range', (0.0, 0.0))
             info['mean_confidence'] = breath_count_info.get('mean_confidence', 0.0)
             info['method'] = 'autocorrelation_windowed'
+            info['quality'] = breath_count_info.get('quality', {})  
         else:
             info['peak_frames'] = breath_count_info.get('peak_frames', [])
             info['method'] = 'peak'
@@ -1017,7 +1024,7 @@ class SignalProcessor:
             peaks, properties = find_peaks(
                 valid_autocorr,
                 prominence=self.acf_min_prominence,
-                distance=min_lag,
+                distance=min_lag
             )
 
             if len(peaks) == 0:
@@ -1092,23 +1099,36 @@ class SignalProcessor:
                 'num_windows': 0,
             }
 
-        # Aggregate window estimates using confidence-weighted median
+        # Aggregate window estimates using confidence-weighted KDE mode
         bpms = np.array([w['bpm'] for w in window_estimates])
         confidences = np.array([w['confidence'] for w in window_estimates])
 
-        # Confidence-weighted median
+        # Confidence-weighted KDE mode: finds where estimate density is highest,
+        # not just the 50th percentile. Robust when confidences are similar but
+        # BPMs cluster in distinct groups.
         if len(bpms) > 0:
-            sorted_indices = np.argsort(bpms)
-            sorted_bpms = bpms[sorted_indices]
-            sorted_confidences = confidences[sorted_indices]
+            bandwidth = max(10.0, np.std(bpms) * 0.3)
+            bpm_grid = np.linspace(bpms.min(), bpms.max(), 500)
+            kde = np.sum(
+                confidences[:, None] * np.exp(-0.5 * ((bpm_grid[None, :] - bpms[:, None]) / bandwidth) ** 2),
+                axis=0
+            )
+            peak_idx = np.argmax(kde)
+            breathing_rate_bpm = bpm_grid[peak_idx]
 
-            cumulative_confidence = np.cumsum(sorted_confidences)
-            total_confidence = cumulative_confidence[-1]
+            # How concentrated is the mass around the peak (0=flat/uncertain, ~1=sharp/confident)
+            kde_concentration = float(1.0 - kde.mean() / kde[peak_idx])
 
-            median_idx = np.searchsorted(cumulative_confidence, total_confidence / 2.0)
-            breathing_rate_bpm = sorted_bpms[median_idx]
+            # Second-peak ratio: mask out the main peak region, find next peak
+            grid_step = bpm_grid[1] - bpm_grid[0]
+            mask_radius = int(3.0 * bandwidth / grid_step)
+            kde_masked = kde.copy()
+            kde_masked[max(0, peak_idx - mask_radius):peak_idx + mask_radius + 1] = 0.0
+            kde_second_peak_ratio = float(kde_masked.max() / kde[peak_idx]) if kde[peak_idx] > 0 else 0.0
         else:
             breathing_rate_bpm = 0.0
+            kde_concentration = 0.0
+            kde_second_peak_ratio = 0.0
 
         # Calculate breath count
         signal_duration_seconds = len(breathing_signal) / fps
@@ -1125,6 +1145,66 @@ class SignalProcessor:
             breath_intervals = [period_seconds] * (breath_count - 1) if breath_count > 1 else []
         else:
             breath_intervals = []
+
+        # ===== QUALITY ASSESSMENT =====
+        # Calculate component quality scores (0-1 scale)
+
+        # 1. Confidence score (already 0-1)
+        confidence_score = mean_confidence
+
+        # 2. Stability score (based on coefficient of variation)
+        cv = bpm_std / breathing_rate_bpm if breathing_rate_bpm > 0 else 1.0
+        stability_score = max(0.0, 1.0 - (cv / 0.3))  # 30% CV = 0 score
+
+        # 3. Range consistency score
+        range_spread = bpm_range[1] - bpm_range[0] if bpm_range[1] > 0 else 0
+        relative_spread = range_spread / breathing_rate_bpm if breathing_rate_bpm > 0 else 1.0
+        range_score = max(0.0, 1.0 - (relative_spread / 0.5))  # 50% spread = 0 score
+
+        # 4. Coverage score (minimum 3 windows expected for decent signal)
+        coverage_score = min(1.0, num_windows / 3.0) if num_windows > 0 else 0.0
+
+        # 6. KDE Sharpness score (1.0 is a sharp peak, 0.0 is flat)
+        # We want to reward high concentration
+        kde_sharpness_score = kde_concentration 
+
+        # 7. Multi-modal penalty (1.0 is no other peaks, 0.0 is a huge second peak)
+        # This directly attacks the "Octave Jump" problem
+        kde_ambiguity_penalty = 1.0 - kde_second_peak_ratio
+
+        # ===== UPDATED OVERALL QUALITY =====
+        quality_score = (
+            0.40 * confidence_score +      # Base signal strength
+            0.20 * kde_sharpness_score +   # How "certain" the mode is
+            0.20 * kde_ambiguity_penalty + # Is there a competing harmonic?
+            0.10 * stability_score +       # General consistency
+            0.10 * coverage_score          # Data quantity
+        )
+
+        # # 5. Weighted overall quality score
+        # quality_score = (
+        #     0.50 * confidence_score +      # 50% weight - most important
+        #     0.20 * stability_score +       # 20% weight
+        #     0.20 * range_score +           # 20% weight
+        #     0.10 * coverage_score          # 10% weight
+        # )
+
+        # Quality label and recommendation
+        if quality_score >= 0.75:
+            quality_label = "EXCELLENT"
+            recommendation = "High confidence - use result"
+        elif quality_score >= 0.60:
+            quality_label = "GOOD"
+            recommendation = "Reliable - use result"
+        elif quality_score >= 0.40:
+            quality_label = "FAIR"
+            recommendation = "Moderate confidence - verify if critical"
+        elif quality_score >= 0.25:
+            quality_label = "POOR"
+            recommendation = "Low confidence - manual review recommended"
+        else:
+            quality_label = "VERY POOR"
+            recommendation = "Unreliable - reject or re-measure"
 
         return {
             'breathing_rate_bpm': breathing_rate_bpm,
@@ -1145,6 +1225,29 @@ class SignalProcessor:
             'num_windows': num_windows,
             'bpm_std': bpm_std,
             'bpm_range': bpm_range,
+            'mean_confidence': mean_confidence,
+            # Quality assessment
+            'quality': {
+                'overall_score': float(quality_score),
+                'label': quality_label,
+                'recommendation': recommendation,
+                'components': {
+                    'confidence': float(confidence_score),
+                    'stability': float(stability_score),
+                    'range_consistency': float(range_score),
+                    'coverage': float(coverage_score),
+                },
+                'metrics': {
+                    'mean_confidence': float(mean_confidence),
+                    'bpm_std': float(bpm_std),
+                    'cv': float(cv),
+                    'relative_spread': float(relative_spread),
+                    'num_windows': int(num_windows),
+                    'bpm_range': (float(bpm_range[0]), float(bpm_range[1])),
+                    'kde_concentration': kde_concentration,      # 0=flat/uncertain, ~1=sharp/confident
+                    'kde_second_peak_ratio': kde_second_peak_ratio,  # >0.5 = competing cluster
+                }
+            }
         }
 
     def _bandpass_filter(self, signal_data: np.ndarray, fps: float) -> np.ndarray:
@@ -1249,6 +1352,7 @@ class SignalProcessor:
 
         # 2.1. Gentle high-pass to clear integration drift
         processed = self._bandpass_filter(processed, fps)
+        info['after_second_bandpass'] = processed.copy()
 
         if use_detrend:
             # 3. SECONDARY DETREND: Integration causes drift. Must re-center.
@@ -1479,3 +1583,77 @@ class SignalProcessor:
             print(f"Plot saved to {save_path}")
 
         plt.show()
+
+    @staticmethod
+    def print_quality_report(result: dict, detail_level: str = 'moderate'):
+        """
+        Print a formatted quality report for ACF windowed results
+
+        Args:
+            result: Result dictionary from count_breaths_autocorrelation_windowed
+            detail_level: 'simple', 'moderate', or 'full'
+        """
+        if 'quality' not in result:
+            print("⚠ Quality metrics not available in result")
+            return
+
+        quality = result['quality']
+        bpm = result.get('breathing_rate_bpm', 0.0)
+
+        if detail_level == 'simple':
+            # Simple format for non-technical users
+            stars = '★' * int(quality['overall_score'] * 5)
+            print(f"Breathing Rate: {bpm:.1f} BPM")
+            print(f"Quality: {stars} {quality['label']} ({quality['overall_score']*100:.0f}% confidence)")
+
+        elif detail_level == 'moderate':
+            # Moderate detail for lab technicians
+            metrics = quality['metrics']
+            bpm_std = metrics['bpm_std']
+            cv = metrics['cv']
+            num_windows = metrics['num_windows']
+
+            print("=" * 50)
+            print(f"Breathing Rate: {bpm:.1f} ± {bpm_std:.1f} BPM")
+            print(f"Quality: {quality['label']} ({quality['overall_score']*100:.0f}% overall)")
+            print(f"Confidence: {metrics['mean_confidence']*100:.0f}%")
+            print(f"Stability: {'High' if cv < 0.1 else 'Moderate' if cv < 0.2 else 'Low'} (CV: {cv*100:.1f}%)")
+            print(f"Windows Analyzed: {num_windows}")
+            print(f"Recommendation: {quality['recommendation']}")
+            print("=" * 50)
+
+        elif detail_level == 'full':
+            # Full detail for researchers
+            metrics = quality['metrics']
+            components = quality['components']
+
+            print("\n" + "=" * 60)
+            print("=== BREATHING RATE MEASUREMENT QUALITY REPORT ===")
+            print("=" * 60)
+            print(f"\nEstimate: {bpm:.2f} BPM")
+            print(f"Method: ACF Windowed")
+
+            print(f"\n--- Overall Quality ---")
+            print(f"Quality Score: {quality['overall_score']:.3f} / 1.000")
+            print(f"Quality Label: {quality['label']}")
+            print(f"Recommendation: {quality['recommendation']}")
+
+            print(f"\n--- Component Scores ---")
+            print(f"  Periodicity Strength: {components['confidence']:.3f}")
+            print(f"  Measurement Stability: {components['stability']:.3f}")
+            print(f"  Range Consistency: {components['range_consistency']:.3f}")
+            print(f"  Window Coverage: {components['coverage']:.3f}")
+
+            print(f"\n--- Detailed Metrics ---")
+            print(f"  Mean Confidence: {metrics['mean_confidence']:.3f}")
+            print(f"  BPM Std Dev: {metrics['bpm_std']:.2f} BPM")
+            print(f"  Coefficient of Variation: {metrics['cv']*100:.2f}%")
+            print(f"  BPM Range: {metrics['bpm_range'][0]:.1f} - {metrics['bpm_range'][1]:.1f} BPM")
+            print(f"  Relative Spread: {metrics['relative_spread']*100:.1f}%")
+            print(f"  Valid Windows: {metrics['num_windows']}")
+
+            print("\n" + "=" * 60)
+
+        else:
+            print(f"⚠ Unknown detail_level: {detail_level}")
+            print("   Valid options: 'simple', 'moderate', 'full'")
