@@ -1,0 +1,140 @@
+# Streamlit UI Configuration
+# Internal styling and formatting parameters for the Breathometer web interface
+
+# Plot styling
+plot:
+  figure_size: [15, 10]
+  dpi: 100
+  grid_alpha: 0.3
+
+  # GridSpec layout
+  gridspec:
+    width_ratios: [30, 1]  # [main plots, colorbar]
+    wspace: 0.05
+
+  # Signal plot (1st plot)
+  signal:
+    line_width: 0.8
+    line_alpha: 0.7
+    line_color: 'steelblue'
+    window_boundary_color_first: 'red'
+    window_boundary_color_other: 'gray'
+    window_boundary_alpha_first: 0.5
+    window_boundary_alpha_other: 0.2
+    window_boundary_width: 1
+
+  # BPM estimates plot (2nd plot)
+  bpm_estimates:
+    scatter_size: 150
+    scatter_cmap: 'RdYlGn'
+    scatter_vmin: 0
+    scatter_vmax: 1
+    scatter_edge_color: 'black'
+    scatter_edge_width: 1.5
+    line_style: '--'
+    line_width: 1
+    line_alpha: 0.4
+    line_color: 'gray'
+    final_estimate_color: 'blue'
+    final_estimate_width: 2.5
+    mean_color: 'orange'
+    mean_line_style: ':'
+    mean_line_width: 1.5
+    mean_alpha: 0.7
+    std_band_alpha: 0.2
+
+  # Confidence plot (3rd plot)
+  confidence:
+    bar_alpha: 0.7
+    bar_edge_color: 'black'
+    bar_width_factor: 0.9  # Multiplied by window_width
+    color_high: 'forestgreen'  # conf >= 0.6
+    color_medium: 'orange'     # 0.3 <= conf < 0.6
+    color_low: 'red'           # conf < 0.3
+    threshold_high: 0.6
+    threshold_low: 0.3
+    mean_line_color: 'red'
+    mean_line_style: '--'
+    mean_line_width: 2
+    threshold_line_color: 'purple'
+    threshold_line_style: ':'
+    threshold_line_width: 2
+    threshold_line_alpha: 0.7
+    ylim_max: 1.05
+
+  # Tracking status plot (fallback for 2nd plot)
+  tracking:
+    line_color: 'green'
+    line_width: 1
+    ylim_min: -0.1
+    ylim_max: 1.1
+
+  # Motion/brightness plot (fallback for 3rd plot)
+  motion_brightness:
+    motion_color: 'red'
+    motion_alpha: 0.7
+    brightness_color: 'blue'
+    brightness_alpha: 0.7
+
+  # Colorbar
+  colorbar:
+    label: 'Confidence'
+    label_rotation: 270
+    label_pad: 20
+
+# Number formatting
+formatting:
+  bpm: '.1f'                    # e.g., 15.2
+  confidence: '.2%'             # e.g., 85.32%
+  frequency: '.3f'              # e.g., 0.253
+  duration: '.1f'               # e.g., 30.5
+  tracking_rate: '.1f'          # e.g., 95.3
+  cv: '.2%'                     # e.g., 12.45%
+  error: '.2f'                  # e.g., 1.23
+  error_percentage: '.1f'       # e.g., 8.5
+  quality_metric: '.3f'         # e.g., 0.823
+  file_size_mb: '.2f'           # e.g., 12.45
+
+# UI Layout
+layout:
+  video_preview_max_width: '400px'
+  log_expander_max_height: '400px'
+  results_table_height: 400
+
+# Status colors
+status:
+  success: 'green'
+  error: 'red'
+  warning: 'orange'
+  info: 'blue'
+
+# Confidence thresholds and warnings
+confidence_thresholds:
+  low_threshold: 0.6  # Below this is considered low confidence
+  critical_threshold: 0.5  # Below this is critical
+
+  # Styling for low confidence (0.3 - 0.6)
+  low_confidence:
+    color: 'orange'
+    background: '#fff3cd'  # Light yellow background
+    border: '2px solid #ffc107'
+    message: '⚠️ Low confidence - Results may not be reliable.'
+
+  # Styling for critical confidence (< 0.3)
+  critical_confidence:
+    color: 'red'
+    background: '#f8d7da'  # Light red background
+    border: '2px solid #dc3545'
+    message: '❌ Very low confidence - Results are likely unreliable.'
+
+  # Styling for good confidence (>= 0.6)
+  good_confidence:
+    color: 'green'
+    background: '#d4edda'  # Light green background
+    border: '2px solid #28a745'
+    message: '✅ Good confidence - Results appear reliable.'
+
+# Batch processing
+batch:
+  max_log_lines: 50
+  progress_update_frequency: 1  # Update UI every N videos
