@@ -810,7 +810,12 @@ class BreathingAnalyzer:
             'tracking_status': self.tracking_status,
             'metadata': self.metadata,
             'breath_counts': info.get('breath_counts', {}),
-            'validation': info.get('validation', {})
+            'validation': info.get('validation', {}),
+            'quality': info.get('quality', {}),
+            'window_estimates': info.get('window_estimates', []),
+            'acf_overlap': self.signal_processor.acf_overlap,
+            'acf_window_size': self.signal_processor.acf_window_size,
+            'acf_min_confidence': self.signal_processor.acf_min_confidence
         }
         
         return results
