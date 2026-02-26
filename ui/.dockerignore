@@ -1,0 +1,72 @@
+# Docker ignore file for Breathometer
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Data and results
+data/
+results/
+batch_process_results/
+analysis_results/
+diagnostics/
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.h5
+
+# Notebooks and experiments
+notebooks/
+*.ipynb
+*.ipynb_checkpoints
+
+# Logs
+logs/
+*.log
+*.ss
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Documentation (keep only essential docs)
+*.md
+!README_STREAMLIT.md
+
+# Test files
+test_*.py
+*_test.py
+optimize_*.py
+analyze_*.py
+
+# Tuning configs (keep only essential configs)
+configs/tuner_*.yaml
+configs/tuned_*.yaml
+configs/tunned_*.yaml
+
+# Training
+src/training/
+
+# Misc
+.DS_Store
+*.png
+*.jpg
+*.jpeg
