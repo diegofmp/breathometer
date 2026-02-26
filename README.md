@@ -32,7 +32,7 @@ The pipeline operates in four main phases:
    - Uses Kernel Density Estimation (KDE) to find consensus among window estimates
    - Returns estimated BPM and confidence score (based on peak prominence and correlation strength)
 
-**Confidence Metric**: The confidence score (0-1) reflects the reliability of the estimate based on autocorrelation peak prominence and consistency across windows. A score below 0.3 (default threshold) indicates potentially unreliable results that may require manual validation.
+**Confidence Metric**: The confidence score (0-1) reflects the reliability of the estimate based on autocorrelation peak prominence and consistency across windows. A score below 0.5 (empirical threshold) indicates potentially unreliable results that may require manual validation.
 
 ## Project Structure
 
@@ -57,6 +57,10 @@ breathometer/
 ├── models/                    # Pre-trained models (bird detector)
 │   └── README.md              # Model setup instructions
 ├── data/                      # Video datasets and ground truth
+│   ├── videos/                # Input video files
+│   ├── results/               # Processing results
+│   └── baseline/              # Ground truth data
+├── output/                    # Output files (plots, CSV results)
 ├── docs/                      # Documentation
 │   ├── DOCKER.md              # Docker usage guide
 │   └── CONFIG_REFERENCE.md    # Configuration parameters reference
@@ -127,23 +131,10 @@ The bird detector is a **custom-trained model** that must be obtained separately
 
 **Setup steps:**
 
-1. **Obtain the bird detector model** from your research coordinator:
-   - Via USB drive
-   - Via internal server (URL to be provided)
-   - From colleague's installation
+1. **Obtain the bird detector model** from the research coordinator.
 
-2. **Place the model in the `models/` directory**:
-   ```bash
-   # Copy from USB or download location
-   cp /path/to/bird_detector.pth models/
-   ```
+2. **Place the model in the `models/` directory**.
 
-3. **Verify installation**:
-   ```bash
-   ls -lh models/
-   # Should show:
-   # bird_detector.pth (~385 MB)
-   ```
 
 See [models/README.md](models/README.md) for detailed setup instructions and troubleshooting.
 
@@ -162,13 +153,16 @@ python process_single_video.py --video data/videos/your_video.mp4 --config confi
 ```
 
 **Options:**
-- `--video`: Path to input video file (required)
+- `--video`: Path to input video file (default: `data/videos/H5_F_2.mp4`)
 - `--config`: Path to configuration file (default: `configs/default.yaml`)
-- `--output`: Path to save output video with visualizations (optional)
-- `--plot`: Generate and save result plots (optional)
+- `--plot`: Generate and save result plots to `output/` folder (optional)
 
 **Example:**
 ```bash
+# Basic processing
+python process_single_video.py --video data/videos/H5_F_2.mp4
+
+# With plot generation (saves to output/{video_name}_pipeline_results.png)
 python process_single_video.py \
     --video data/videos/H5_F_2.mp4 \
     --config configs/default.yaml \
@@ -180,27 +174,28 @@ python process_single_video.py \
 Process all videos in a directory with [batch_process_videos.py](batch_process_videos.py):
 
 ```bash
+# Basic usage (saves to output/results.csv by default)
+python batch_process_videos.py --directory data/videos/
+
+# With custom config and output path
 python batch_process_videos.py \
     --directory data/videos/ \
     --config configs/default.yaml \
-    --output results.csv
+    --output output/my_results.csv
 ```
 
 **Options:**
 - `--directory`: Directory containing video files (required)
 - `--config`: Configuration file path (default: `configs/default.yaml`)
-- `--output`: Path to output CSV file with results (required)
-- `--output-videos`: Directory to save processed videos with visualizations (optional)
+- `--output`: Path to output CSV file (default: `output/results.csv`)
 - `--recursive`: Search subdirectories recursively (optional flag)
 - `--extensions`: Video file extensions to process (default: .mp4 .avi .mov .mkv)
 
-**Example with output videos:**
+**Example with recursive search:**
 ```bash
 python batch_process_videos.py \
-    --directory data/videos/ \
-    --config configs/default.yaml \
-    --output results.csv \
-    --output-videos processed_videos/
+    --directory data/ \
+    --recursive
 ```
 
 ### Web Interface
@@ -242,6 +237,15 @@ For detailed parameter documentation, see [docs/CONFIG_REFERENCE.md](docs/CONFIG
 
 ## Output
 
+### Output Files
+
+All output files are saved to the `output/` directory by default:
+
+- **Plots**: `process_single_video.py --plot` saves plots as `output/{video_name}_pipeline_results.png`
+- **CSV Results**: `batch_process_videos.py` saves results to `output/results.csv` (customizable)
+
+The `output/` directory is automatically created if it doesn't exist.
+
 ### Results Dictionary
 
 The pipeline returns a dictionary with:
@@ -262,8 +266,7 @@ The pipeline returns a dictionary with:
 
 ### Confidence Interpretation
 
-- **confidence ≥ 0.3**: Results are likely reliable (default threshold)
-- **confidence < 0.3**: Results may be unreliable and should be validated manually
+- **confidence < 0.5**: Results may be unreliable and should be validated manually
 - Low confidence can indicate:
   - Weak autocorrelation peaks (poor signal periodicity)
   - Inconsistent estimates across windows

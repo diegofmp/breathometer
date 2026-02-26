@@ -399,7 +399,7 @@ def process_batch_from_csv(csv_data, config_path):
             test_cap.release()
 
             # Process video
-            results = analyzer.process_video(video_path=video_path, output_path=None)
+            results = analyzer.process_video(video_path=video_path)
 
             # Extract metrics
             result_row = {
@@ -863,8 +863,7 @@ def main():
 
                     with stream_capture:
                         results = analyzer.process_video(
-                            video_path=tmp_input_path,
-                            output_path=None
+                            video_path=tmp_input_path
                         )
 
                     progress_container.progress(1.0, text="Processing complete!")

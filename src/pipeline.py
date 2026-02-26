@@ -127,7 +127,6 @@ class BreathingAnalyzer:
             'brightness': [],  # Frame brightness (mean intensity)
             'brightness_change': [],  # Frame-to-frame brightness change
             'motion': [],  # Global motion estimate
-            'audio_level': [],  # Audio noise level
             'hand_motion': [],  # Hand position change
             'chest_motion': [],  # Chest ROI position change
         }
@@ -684,9 +683,6 @@ class BreathingAnalyzer:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        # Extract audio using ffmpeg-python
-        audio_samples = self._extract_audio(video_path, fps)
-        
         print(f"\nVideo: {video_path}")
         print(f"  FPS: {fps}")
         print(f"  Frames: {total_frames}")
@@ -726,7 +722,6 @@ class BreathingAnalyzer:
             'brightness': [],
             'brightness_change': [],
             'motion': [],
-            'audio_level': [],
             'hand_motion': [],
             'chest_motion': [],
         }
@@ -740,7 +735,6 @@ class BreathingAnalyzer:
         self.peak_threshold = None
         self.current_rate_bpm = 0.0
         self.breath_flash_frames = 0  # Frames remaining to show breath flash
-        self.beep_frames = []  # Track which frames have beeps for audio generation
 
         with tqdm(total=frames_to_process, desc="Processing") as pbar:
             
@@ -784,11 +778,6 @@ class BreathingAnalyzer:
                 
                 # Tracking + Measurement
                 result = self._track_and_measure(frame)
-                
-                # Get audio level for this frame
-                audio_level = 0.0
-                if len(audio_samples) > frames_processed:
-                    audio_level = audio_samples[frames_processed]
 
                 # Collect metadata (after processing to get hand/chest positions)
                 hand_bbox = result.get('hand_bbox') if result else None
@@ -798,7 +787,7 @@ class BreathingAnalyzer:
                 if tracker_status is not None and tracker_status== 'detected':
                     print(f"Tracked failed to track ROI at frame {self.frame_idx} and was REINITIALIZED")
 
-                self._collect_metadata(frame, audio_level, hand_bbox, chest_roi)
+                self._collect_metadata(frame, hand_bbox, chest_roi)
 
                 # Record tracking status
                 self.tracking_status.append(1 if result is not None else 0)
@@ -932,7 +921,7 @@ class BreathingAnalyzer:
         else:
             return cv2.TrackerKCF_create()
     
-    def _collect_metadata(self, frame: np.ndarray, audio_level: float = 0.0,
+    def _collect_metadata(self, frame: np.ndarray,
                          hand_bbox: Optional[tuple] = None, chest_roi: Optional[tuple] = None):
         """
         Compute and accumulate per-frame quality/diagnostic metadata.
@@ -948,8 +937,6 @@ class BreathingAnalyzer:
             - ``'motion'``: Mean per-pixel absolute difference between consecutive
               grayscale frames — a proxy for global camera/scene motion
               (``0.0`` on the first call).
-            - ``'audio_level'``: Pre-computed RMS energy value for this frame,
-              passed in from the caller (``0.0`` if audio is unavailable).
             - ``'hand_motion'``: Euclidean distance (pixels) the hand bbox
               center moved since the last frame. ``0.0`` if ``hand_bbox`` is
               ``None`` or on the first frame with a hand.
@@ -958,14 +945,12 @@ class BreathingAnalyzer:
               ``None`` or on the first frame with a chest ROI.
 
         Side effects:
-            - Appends one value to each of the six lists in ``self.metadata``.
+            - Appends one value to each of the five lists in ``self.metadata``.
             - Updates ``self.prev_frame_gray``, ``self.prev_hand_center``, and
               ``self.prev_chest_center`` for the next frame's delta computations.
 
         Args:
             frame (np.ndarray): Current BGR video frame.
-            audio_level (float): Pre-computed RMS audio energy for this frame.
-                Defaults to ``0.0``.
             hand_bbox (tuple[int,int,int,int] or None): Hand bounding box as
                 ``(x, y, w, h)``. Pass ``None`` when not available.
             chest_roi (tuple[int,int,int,int] or None): Chest ROI as
@@ -994,10 +979,7 @@ class BreathingAnalyzer:
         else:
             self.metadata['motion'].append(0.0)
 
-        # 4. Audio level
-        self.metadata['audio_level'].append(audio_level)
-
-        # 5. Hand motion (distance moved from previous frame)
+        # 4. Hand motion (distance moved from previous frame)
         if hand_bbox is not None:
             hand_center = np.array([
                 hand_bbox[0] + hand_bbox[2]/2,
@@ -1029,97 +1011,6 @@ class BreathingAnalyzer:
 
         # Store current frame for next iteration
         self.prev_frame_gray = gray.copy()
-
-    def _extract_audio(self, video_path: str, fps: float) -> np.ndarray:
-        """
-        Extract the audio track from a video file and compute per-frame RMS energy.
-
-        Uses ``ffmpeg`` (via subprocess) to decode the audio into a temporary
-        mono 16-bit PCM WAV file at 44 100 Hz. The PCM samples are then
-        normalized to ``[-1, 1]`` and chunked into segments that correspond to
-        individual video frames, with the root-mean-square (RMS) energy computed
-        for each chunk.
-
-        The resulting array can be used as a proxy for ambient noise or handling
-        events (e.g. the bird being disturbed) and is stored per frame in
-        ``self.metadata['audio_level']`` via ``_collect_metadata``.
-
-        Steps:
-            1. Spawn ``ffmpeg`` to demux and decode the audio stream into a
-               temporary ``.wav`` file (mono, 16-bit, 44 100 Hz).
-            2. Read the WAV samples with the standard-library ``wave`` module
-               and unpack them with ``struct``.
-            3. Normalize samples to ``[-1.0, 1.0]``.
-            4. Slice into per-frame windows of ``sample_rate / fps`` samples and
-               compute the RMS of each window.
-            5. Delete the temporary WAV file.
-
-        Args:
-            video_path (str): Absolute or relative path to the source video file.
-            fps (float): Video frame rate, used to determine the number of audio
-                samples per video frame.
-
-        Returns:
-            np.ndarray: 1-D float32 array of length ≈ ``total_video_frames``,
-                where each element is the RMS audio energy in ``[0, 1]`` for the
-                corresponding video frame. Returns an empty array
-                (``np.array([])``) if ``ffmpeg`` is unavailable, the video has
-                no audio track, or any other exception occurs.
-        """
-        try:
-            import subprocess
-            import tempfile
-            import wave
-            import struct
-
-            # Extract audio to temporary WAV file using ffmpeg
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-                tmp_audio_path = tmp.name
-
-            # Use ffmpeg to extract audio
-            cmd = [
-                'ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le',
-                '-ar', '44100', '-ac', '1', '-y', tmp_audio_path
-            ]
-
-            result = subprocess.run(cmd, capture_output=True, text=True)
-
-            if result.returncode != 0:
-                print(f"  Warning: Could not extract audio (ffmpeg not available or no audio track)")
-                return np.array([])
-
-            # Read WAV file
-            with wave.open(tmp_audio_path, 'rb') as wav:
-                sample_rate = wav.getframerate()
-                n_frames = wav.getnframes()
-                audio_data = wav.readframes(n_frames)
-
-                # Convert to numpy array
-                samples = np.array(struct.unpack(f'{n_frames}h', audio_data), dtype=np.float32)
-                samples = samples / 32768.0  # Normalize to [-1, 1]
-
-            # Clean up temp file
-            import os
-            os.remove(tmp_audio_path)
-
-            # Compute RMS energy per video frame
-            samples_per_frame = int(sample_rate / fps)
-            n_video_frames = int(len(samples) / samples_per_frame)
-
-            audio_levels = []
-            for i in range(n_video_frames):
-                start_idx = i * samples_per_frame
-                end_idx = start_idx + samples_per_frame
-                frame_samples = samples[start_idx:end_idx]
-                rms = np.sqrt(np.mean(frame_samples ** 2))
-                audio_levels.append(rms)
-
-            print(f"  Audio extracted: {len(audio_levels)} frames")
-            return np.array(audio_levels)
-
-        except Exception as e:
-            print(f"  Warning: Audio extraction failed: {e}")
-            return np.array([])
 
     def analyze_measurement_quality(self) -> Dict:
         """
