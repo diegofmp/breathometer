@@ -16,6 +16,7 @@ from src.localizers import get_localizer
 from src.measurements import get_measurement
 from src.signal_processing import SignalProcessor
 from src.utils.data_utils import Segment, extract_bird_mask, verify_hand_segmentation
+from src.utils import validate_config, ConfigValidationError
 
 
 
@@ -40,6 +41,13 @@ class BreathingAnalyzer:
         # Load configuration
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
+
+        # Validate configuration
+        from pathlib import Path
+        try:
+            validate_config(self.config, Path(config_path))
+        except ConfigValidationError as e:
+            raise ValueError(f"Configuration validation failed: {e}") from e
 
         print("="*60)
         print("BIRD BREATHING ANALYZER")

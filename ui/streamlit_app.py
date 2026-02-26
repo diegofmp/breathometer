@@ -478,6 +478,8 @@ def main():
         st.session_state.start_processing = False
     if 'processing_logs' not in st.session_state:
         st.session_state.processing_logs = None
+    if 'processing_error' not in st.session_state:
+        st.session_state.processing_error = None
     if 'batch_processing' not in st.session_state:
         st.session_state.batch_processing = False
     if 'start_batch_processing' not in st.session_state:
@@ -757,6 +759,7 @@ def main():
                 st.session_state.processing = False
                 st.session_state.start_processing = False
                 st.session_state.processing_logs = None
+                st.session_state.processing_error = None
 
             # Check if manual mode requires ROI before enabling processing
             with open(config_path, 'r') as f:
@@ -777,6 +780,7 @@ def main():
                 st.session_state.processing = True
                 st.session_state.start_processing = True
                 st.session_state.results = None
+                st.session_state.processing_error = None
 
             # Process video button
             st.button(
@@ -790,6 +794,17 @@ def main():
             # Show helpful message if disabled due to missing ROI
             if disable_reason == "manual_roi_missing":
                 st.warning("⚠️ Please save the ROI before processing (see left panel)")
+
+            # Display persistent error if exists
+            if st.session_state.processing_error is not None:
+                error_info = st.session_state.processing_error
+                st.error(f"❌ **Error during processing:** {error_info['message']}")
+                with st.expander("Show error details"):
+                    st.code(error_info['traceback'])
+                if st.button("Clear Error", key="clear_error_btn"):
+                    st.session_state.processing_error = None
+                    st.session_state.processing_logs = None
+                    st.rerun()
 
             if st.session_state.start_processing and st.session_state.processing:
                 # Check if manual mode requires ROI
@@ -880,9 +895,12 @@ def main():
                     st.session_state.processing = False
                     st.session_state.start_processing = False
                     st.session_state.results = None
-                    st.error(f"Error during processing: {e}")
-                    with st.expander("Show error details"):
-                        st.code(traceback.format_exc())
+                    st.session_state.processing_logs = None
+                    # Store error persistently
+                    st.session_state.processing_error = {
+                        'message': str(e),
+                        'traceback': traceback.format_exc()
+                    }
                     st.rerun()
 
                 finally:
@@ -1171,6 +1189,7 @@ def main():
             def start_batch_processing_callback():
                 st.session_state.batch_processing = True
                 st.session_state.start_batch_processing = True
+                st.session_state.processing_error = None
                 st.session_state.batch_results = None  # Clear previous results
 
             # Process button
@@ -1181,6 +1200,16 @@ def main():
                 disabled=st.session_state.batch_processing,
                 on_click=start_batch_processing_callback
             )
+
+            # Display persistent error if exists
+            if st.session_state.processing_error is not None:
+                error_info = st.session_state.processing_error
+                st.error(f"❌ **Error during batch processing:** {error_info['message']}")
+                with st.expander("Show error details"):
+                    st.code(error_info['traceback'])
+                if st.button("Clear Error", key="clear_batch_error_btn_1"):
+                    st.session_state.processing_error = None
+                    st.rerun()
 
         elif input_method == "Upload CSV" and uploaded_csv is not None:
             try:
@@ -1208,6 +1237,7 @@ def main():
                     st.session_state.batch_processing = True
                     st.session_state.start_batch_processing = True
                     st.session_state.batch_results = None  # Clear previous results
+                    st.session_state.processing_error = None
 
                 # Process button
                 st.button(
@@ -1217,6 +1247,16 @@ def main():
                     disabled=st.session_state.batch_processing,
                     on_click=start_batch_processing_callback
                 )
+
+                # Display persistent error if exists
+                if st.session_state.processing_error is not None:
+                    error_info = st.session_state.processing_error
+                    st.error(f"❌ **Error during batch processing:** {error_info['message']}")
+                    with st.expander("Show error details"):
+                        st.code(error_info['traceback'])
+                    if st.button("Clear Error", key="clear_batch_error_btn_2"):
+                        st.session_state.processing_error = None
+                        st.rerun()
 
             except Exception as e:
                 st.error(f"Error reading CSV file: {e}")
@@ -1279,9 +1319,11 @@ def main():
             except Exception as e:
                 st.session_state.batch_processing = False
                 st.session_state.start_batch_processing = False
-                st.error(f"Error during batch processing: {e}")
-                with st.expander("Show error details"):
-                    st.code(traceback.format_exc())
+                # Store error persistently
+                st.session_state.processing_error = {
+                    'message': str(e),
+                    'traceback': traceback.format_exc()
+                }
                 st.rerun()
 
         # Display batch results from session state (if available)
