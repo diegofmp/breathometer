@@ -102,7 +102,9 @@ class RFDETRDetector(BaseDetector):
         # For batch inference, don't optimize or use: model.optimize_for_inference(batch_size=N)
         # self.model.optimize_for_inference()
 
-        self.confidence_threshold = config.get('confidence_threshold', 0.5)
+        # Confidence threshold - use class-specific defaults
+        default_threshold = 0.3 if self.target_class == 'hand' else 0.2
+        self.confidence_threshold = config.get('confidence_threshold', default_threshold)
 
         print(f"✓ RFDETRDetector initialized (device: {self.device}, "
               f"target: {self.target_class}, threshold: {self.confidence_threshold}, "

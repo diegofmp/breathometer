@@ -48,7 +48,7 @@ class BreathingAnalyzer:
         # Initialize components
         self.detector = get_detector(self.config['detection']) # un Auto mode: HAND detector. Manual: acts directly as CHEST "detector"
         self.bird_detector = get_detector(self.config['segmentation']) # TODO double check naming on config file
-        self.rely_segmentator = self.config['segmentation'].get('rely_segmentator', True)
+        self.rely_segmentator = self.config['segmentation'].get('rely_segmentator', False)
 
         # Check detection mode
         self.detection_mode = self.config['detection'].get('mode', 'auto')
@@ -67,12 +67,8 @@ class BreathingAnalyzer:
             print("⚙ MANUAL MODE: User will select chest ROI directly")
             print("⚠ Skipping: hand detection, bird segmentation, chest localization")
         else:
-            # Check if segmentation is enabled
-            self.segmentation_enabled = self.config['segmentation'].get('enabled', True)
-            print("SELF__SEGMENTATION ENABE? ", self.segmentation_enabled)
-
             self.localizer = get_localizer(self.config['localization'])
-        self.measurement = get_measurement(self.config['measurement'])
+        self.measurement = get_measurement(self.config.get('measurement', {}))
         self.signal_processor = SignalProcessor(self.config['signal_processing'])
 
         # buffers
@@ -109,7 +105,7 @@ class BreathingAnalyzer:
         print("="*60)
 
     def _initialize_tracker(self, frame, roi):
-        tracker_type = self.config['tracking']['chest_tracker']
+        tracker_type = self.config['tracking'].get('chest_tracker', 'KCF')
         self.chest_tracker = self._create_tracker(tracker_type)
 
         roi_tuple = tuple(int(v) for v in roi)

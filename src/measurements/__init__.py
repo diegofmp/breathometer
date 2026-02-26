@@ -44,26 +44,21 @@ class OpticalFlowDivergenceRobustMeasurement:
         self.poly_n = config.get('poly_n', 5)
         self.poly_sigma = config.get('poly_sigma', 1.2)
 
-        # Aggregation options
-        self.use_median = config.get('use_median', True)
+        # Aggregation method (default: mean)
+        self.use_median = config.get('use_median', False)
 
-        # Patch-based options
-        self.use_patches = config.get('use_patches', False)
+        # Patch-based measurement (default: enabled)
+        self.use_patches = config.get('use_patches', True)
         self.patch_rows = config.get('patch_rows', 3)
         self.patch_cols = config.get('patch_cols', 3)
 
-        # Radial consistency validation (optional)
-        self.use_validation = config.get('use_validation', False)
-        if self.use_validation:
-            from src.validation import RadialConsistencyValidator
-            validation_config = config.get('validation', {})
-            self.validator = RadialConsistencyValidator(validation_config)
-        else:
-            self.validator = None
+        # Radial consistency validation (always enabled)
+        from src.validation import RadialConsistencyValidator
+        validation_config = config.get('validation', {})
+        self.validator = RadialConsistencyValidator(validation_config)
 
         print("✓ OpticalFlowDivergenceRobustMeasurement initialized")
-        if self.use_validation:
-            print("  → Radial consistency validation enabled")
+        print("  → Radial consistency validation enabled")
 
     def _remove_affine_motion(self, u_x, u_y, mask):
         """Helper to estimate and subtract 2D affine rigid motion."""
@@ -197,9 +192,9 @@ class OpticalFlowDivergenceRobustMeasurement:
             # 3. Average those top 3 (original values, not absolute)
             breathing = np.mean([patch_values[i] for i in top_indices])
 
-        # 5. Radial consistency validation (optional)
+        # 5. Radial consistency validation
         # Rejects non-breathing motion artifacts (hand movements, repositioning)
-        if self.validator is not None:
+        if self.validator is not None:  # Always true, kept for safety
             validated_breathing, is_valid, validator_metrics = self.validator.validate(
                 u_x_res, u_y_res,
                 signal_value=breathing,
@@ -222,12 +217,12 @@ class OpticalFlowDivergenceRobustMeasurement:
                 'quality': 'valid' if is_valid else 'invalid',
                 'shape': chest_region.shape,
                 'breathing_raw': float(breathing),
-                'was_validated': self.use_validation,
+                'was_validated': True,
                 'validator_metrics': validator_metrics if is_valid else ''
             }
 
         else:
-            # No validation - always update last valid value
+            # Safety fallback (should never happen since validator is always initialized)
             self.last_valid_breathing = breathing
 
             # Build metadata for successful measurement
@@ -235,7 +230,7 @@ class OpticalFlowDivergenceRobustMeasurement:
                 'quality': 'valid',
                 'shape': chest_region.shape,
                 'breathing_raw': float(breathing),
-                'was_validated': self.use_validation
+                'was_validated': True
             }
 
         self.prev_chest = chest_region.copy()
@@ -261,13 +256,9 @@ class OpticalFlowDivergenceRobustMeasurement:
     
     def reset(self, init_chest_region=None):
         """Reset internal state"""
-        #self.prev_chest = None
         self.prev_chest = init_chest_region
-
-        
         self.last_valid_breathing = 0.0
-        if self.validator is not None:
-            self.validator.reset()
+        self.validator.reset()
 
 def get_measurement(config: dict):
     """
@@ -277,12 +268,6 @@ def get_measurement(config: dict):
         config: Configuration dictionary
 
     Returns:
-        Measurement instance
+        OpticalFlowDivergenceRobustMeasurement instance
     """
-    method = config.get('method', 'optical_flow_divergence_robust')
-
-    if method == 'optical_flow_divergence_robust':
-        return OpticalFlowDivergenceRobustMeasurement(config)
-    else:
-        print(f"⚠ Unknown measurement method '{method}', defaulting to OpticalFlowDivergenceRobustMeasurement")
-        return OpticalFlowDivergenceRobustMeasurement(config)
+    return OpticalFlowDivergenceRobustMeasurement(config)

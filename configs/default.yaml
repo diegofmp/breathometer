@@ -4,66 +4,26 @@
 detection:
   mode: 'rfdetr'  # Options: 'manual' (prompt manual ROI) or 'rfdetr' (automatic detection)
 
-  confidence_threshold: 0.3
-  device: 'auto'  # auto, cpu, cuda
-
-  # RF-DETR detection settings
-  rfdetr_variant: 'medium'  # Options: nano, small, medium, large, xlarge
-  target_class: 'hand'
-
 # Segmentation
 segmentation:
-  enabled: false  # Set to false to skip bird segmentation and use hand mask directly for chest localization
-  method: 'DL'  # Deep learning-based segmentation using RF-DETR
-  rely_segmentator: true # whether to rely only on the bird masks or use hand mask to clean it
-
-  mode: 'rfdetr'
-  model: "/home/diego/Documents/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"
-  model_path: "/home/diego/Documents/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"
   target_class: 'bird'
-
-
-  confidence_threshold: 0.2
-  device: 'auto'  # auto, cpu, cuda
+  model: "/media/diego/AE8D-4E3F/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"
+  model_path: "/media/diego/AE8D-4E3F/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"
 
 # Chest Localization
 localization:
-  # Frame preprocessing
-  smooth_kernel_size: 21  # Kernel size for Gaussian smoothing of frames
-
-  # Pipeline buffer configuration (used by pipeline, not localizer directly)
   custom_localizer:
     buffer_frames: 30  # Total frames buffered by pipeline for processing
-    hand_mask_buffer_frames: 20  # Frames used for hand/bird mask detection
+    hand_mask_buffer_frames: 15  # Frames used for hand/bird mask detection
 
 # Tracking
 tracking:
-  hand_tracker: 'KCF'     # Options: CSRT, KCF, MIL, MedianFlow
-  chest_tracker: 'KCF'     # Options: KCF, CSRT, MIL
-  redetect_interval: 0    # Frames between re-detection  (0 if not needed)
-  start_frame: 300           # Frame to start processing (skip initial camera stabilization)
-  max_frames: 1800         # Maximum frames to process (null = process all)
+  redetect_interval: 0    # Frames between re-detection (0 = disabled)
+  start_frame: 300        # Frame to start processing (skip initial stabilization)
+  max_frames: 900        # Maximum frames to process (null = all)
 
 # Measurement
-measurement:
-  method: 'optical_flow_divergence_robust'  # Options: intensity, optical_flow, optical_flow_divergence, optical_flow_divergence_robust, geometric_distance
-
-  # Optical flow parameters (for optical_flow and optical_flow_divergence methods)
-  pyr_scale: 0.5      # Image pyramid scale (0.5 = 50% reduction per level)
-  levels: 3           # Number of pyramid levels
-  winsize: 15         # Averaging window size
-  iterations: 3       # Iterations at each pyramid level
-  poly_n: 5           # Polynomial expansion neighborhood size
-  poly_sigma: 1.2     # Gaussian sigma for polynomial expansion
-  use_patches: true   # Patch the roi for optical_flow_divergence_robust
-  patch_rows: 3       # Patches to split ROI for optical_flow_divergence_robust
-  patch_cols: 3       # Patches to split ROI for optical_flow_divergence_robust
-  use_median: false    # use median to aggregate divergence, otherwise mean
-
-  # === RADIAL CONSISTENCY VALIDATION ===
-  # Rejects non-breathing motion artifacts (hand movements, repositioning)
-  use_validation: true    # Enable validation
-
+# All parameters use defaults - see docs/CONFIG_REFERENCE.md to override
 
 # Signal Processing
 signal_processing:
