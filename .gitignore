@@ -81,8 +81,6 @@ data/videos/*
 # Debug outputs
 debug/results/
 
-# Documentation (internal for now)
-docs/
 
 # OS-specific
 .DS_Store
@@ -105,3 +103,4 @@ temp/
 *.tmp
 rois/eval_v2/
 diagnostics
+output/
