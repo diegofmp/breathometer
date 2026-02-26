@@ -21,39 +21,3 @@ tracking:
   redetect_interval: 0    # Frames between re-detection (0 = disabled)
   start_frame: 300        # Frame to start processing (skip initial stabilization)
   max_frames: 900        # Maximum frames to process (null = all)
-
-# Measurement
-# All parameters use defaults - see docs/CONFIG_REFERENCE.md to override
-
-# Signal Processing
-signal_processing:
-  # Real-time breath counting parameters
-  breath_counting:
-    method: 'autocorrelation_windowed'  # Options: 'emv_phase', 'fft_frequency', 'fft_windowed', 'autocorrelation', "autocorrelation_windowed"
-
-    # EMV phase-based method parameters (only used when method='emv_phase')
-    emv_phase:
-      min_phase_duration: 0.05  # Minimum duration for inspiration/expiration phases (seconds). Increase to reduce overcounting.
-      zero_crossing_threshold: 0.02  # Minimum signal magnitude for valid zero crossing (0.0-1.0). Increase to filter noise crossings.
-      min_cycle_amplitude: 0.10  # Minimum cycle amplitude as fraction of signal range (0.0-1.0). Increase to reject shallow cycles.
-      ie_ratio_range: [0.3, 5.0]  # Valid I:E ratio range [min, max]. Tighten range to reject abnormal cycles.
-
-    # FFT-based frequency estimation (only used when method='fft_frequency' or 'fft_windowed')
-    # Based on proven 2018 approach - immune to amplitude variation
-    fft_frequency:
-      window_size: 15.0  # Window duration in seconds (for windowed FFT version). Longer = better freq resolution
-      overlap: 0.5  # Window overlap fraction (0.0-0.9) for windowed version
-      min_snr: 3.0  # Minimum signal-to-noise ratio to trust estimate (3-5 recommended)
-      wiener_scaling: true  # Apply sqrt(f) Wiener noise compensation
-
-    # Autocorrelation method parameters (only used when method='autocorrelation' or 'autocorrelation_windowed')
-    # Detects periodicity without amplitude assumptions or hard peak spacing constraints
-    autocorrelation:
-      min_breathing_rate_bpm: 90   # Minimum BPM (1.5 Hz, matches bandpass low_freq)
-      max_breathing_rate_bpm: 312  # Maximum BPM (5.2 Hz, matches bandpass high_freq)
-      acf_min_prominence: 0.15     # Minimum ACF peak prominence (0-1 scale). Higher = stricter, lower = more sensitive
-      acf_peak_selection: 'first'  # Peak selection: 'first' (fundamental frequency) or 'highest' (max prominence)
-      min_confidence: 0.3          # Minimum confidence to trust estimate
-      low_correlation_threshold: 0.3  # ACF peak value below this triggers low-confidence warning
-      window_size: 15.0            # Window duration in seconds (for autocorrelation_windowed). Longer = better for periodicity detection
-      overlap: 0.5                 # Window overlap fraction (0.0-0.9) for windowed version

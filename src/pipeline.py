@@ -69,7 +69,7 @@ class BreathingAnalyzer:
         else:
             self.localizer = get_localizer(self.config['localization'])
         self.measurement = get_measurement(self.config.get('measurement', {}))
-        self.signal_processor = SignalProcessor(self.config['signal_processing'])
+        self.signal_processor = SignalProcessor(self.config.get('signal_processing', {}))
 
         # buffers
         self.buffer_frames = deque(maxlen=self.buffer_frames_size) 

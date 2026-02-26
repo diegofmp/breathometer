@@ -104,3 +104,4 @@ tmp/
 temp/
 *.tmp
 rois/eval_v2/
+diagnostics
