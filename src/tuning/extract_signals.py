@@ -39,11 +39,32 @@ class SignalExtractor:
         Args:
             config: Configuration dictionary
         """
-        self.config = config
-        self.measurement_method = config['measurement']['method']
-        self.tracker_type = config['tracking']['chest_tracker']
-        self.start_frame = config['tracking']['start_frame']
-        self.max_frames = config['tracking'].get('max_frames', None)
+        # Set default measurement config if not provided
+        default_measurement = {
+            'pyr_scale': 0.5,
+            'levels': 3,
+            'winsize': 15,
+            'iterations': 3,
+            'poly_n': 5,
+            'poly_sigma': 1.2,
+            'patch_rows': 3,
+            'patch_cols': 3
+        }
+
+        # Merge user config with defaults
+        self.config = config.copy()
+        if 'measurement' not in self.config:
+            self.config['measurement'] = default_measurement
+        else:
+            # Fill in any missing measurement params with defaults
+            for key, value in default_measurement.items():
+                if key not in self.config['measurement']:
+                    self.config['measurement'][key] = value
+
+        self.measurement_method = 'optical_flow_divergence'  # Currently the only method
+        self.tracker_type = config.get('tracking', {}).get('chest_tracker', 'KCF')
+        self.start_frame = config.get('tracking', {}).get('start_frame', 0)
+        self.max_frames = config.get('tracking', {}).get('max_frames', None)
 
     def _create_tracker(self) -> cv2.Tracker:
         """Create OpenCV tracker"""
@@ -318,7 +339,7 @@ def extract_signals(
     print(f"{'='*70}")
     print(f"Videos to process: {len(rois)}")
     print(f"Config: {config_path}")
-    print(f"Measurement: {config['measurement']['method']}")
+    print(f"Measurement: optical_flow_divergence")
     print(f"Output: {cache_dir}")
     print(f"{'='*70}\n")
 

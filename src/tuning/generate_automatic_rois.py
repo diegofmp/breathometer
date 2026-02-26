@@ -131,10 +131,8 @@ def generate_automatic_roi(
                 'total_frames': total_frames,
                 'detection_method': 'automatic',
                 'config': {
-                    'detection': config['detection']['mode'],
-                    'segmentation': config['segmentation']['mode'],
-                    'localization': config['localization']['method'],
-                    'hard_constrain_mode': config['localization']['custom_localizer']['hard_constrain_mode']
+                    'roi_localization_mode': config.get('roi_localization', {}).get('mode', 'auto'),
+                    'localization_method': config.get('localization', {}).get('method', 'custom'),
                 }
             }
         }
@@ -172,9 +170,10 @@ def generate_automatic_rois(
         config = yaml.safe_load(f)
 
     print(f"Config: {config_path}")
-    print(f"Detection: {config['detection']['mode']}")
-    print(f"Segmentation: {config['segmentation']['mode']}")
-    print(f"Localization: {config['localization']['method']}")
+    roi_config = config.get('roi_localization', {})
+    print(f"ROI Localization Mode: {roi_config.get('mode', 'auto')}")
+    loc_config = config.get('localization', {})
+    print(f"Localization Method: {loc_config.get('method', 'custom')}")
 
     # Load input manifest (manual ROIs with ground truth)
     input_roi_manager = ROIManager(Path(input_manifest_path).parent)

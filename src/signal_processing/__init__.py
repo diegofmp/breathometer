@@ -489,23 +489,37 @@ class SignalProcessor:
         # BPMs cluster in distinct groups.
         if len(bpms) > 0:
             bandwidth = max(10.0, np.std(bpms) * 0.3)
-            bpm_grid = np.linspace(bpms.min(), bpms.max(), 500)
-            kde = np.sum(
-                confidences[:, None] * np.exp(-0.5 * ((bpm_grid[None, :] - bpms[:, None]) / bandwidth) ** 2),
-                axis=0
-            )
-            peak_idx = np.argmax(kde)
-            breathing_rate_bpm = bpm_grid[peak_idx]
 
-            # How concentrated is the mass around the peak (0=flat/uncertain, ~1=sharp/confident)
-            kde_concentration = float(1.0 - kde.mean() / kde[peak_idx])
+            # Handle case where all BPMs are identical
+            if bpms.min() == bpms.max():
+                breathing_rate_bpm = float(bpms[0])
+                kde_concentration = 1.0  # Perfect agreement
+                kde_second_peak_ratio = 0.0  # No competing peaks
+            else:
+                bpm_grid = np.linspace(bpms.min(), bpms.max(), 500)
+                grid_step = bpm_grid[1] - bpm_grid[0]
 
-            # Second-peak ratio: mask out the main peak region, find next peak
-            grid_step = bpm_grid[1] - bpm_grid[0]
-            mask_radius = int(3.0 * bandwidth / grid_step)
-            kde_masked = kde.copy()
-            kde_masked[max(0, peak_idx - mask_radius):peak_idx + mask_radius + 1] = 0.0
-            kde_second_peak_ratio = float(kde_masked.max() / kde[peak_idx]) if kde[peak_idx] > 0 else 0.0
+                # Ensure grid_step is not zero (shouldn't happen but safeguard)
+                if grid_step == 0:
+                    breathing_rate_bpm = float(bpms[0])
+                    kde_concentration = 1.0
+                    kde_second_peak_ratio = 0.0
+                else:
+                    kde = np.sum(
+                        confidences[:, None] * np.exp(-0.5 * ((bpm_grid[None, :] - bpms[:, None]) / bandwidth) ** 2),
+                        axis=0
+                    )
+                    peak_idx = np.argmax(kde)
+                    breathing_rate_bpm = bpm_grid[peak_idx]
+
+                    # How concentrated is the mass around the peak (0=flat/uncertain, ~1=sharp/confident)
+                    kde_concentration = float(1.0 - kde.mean() / kde[peak_idx]) if kde[peak_idx] > 0 else 0.0
+
+                    # Second-peak ratio: mask out the main peak region, find next peak
+                    mask_radius = int(3.0 * bandwidth / grid_step)
+                    kde_masked = kde.copy()
+                    kde_masked[max(0, peak_idx - mask_radius):peak_idx + mask_radius + 1] = 0.0
+                    kde_second_peak_ratio = float(kde_masked.max() / kde[peak_idx]) if kde[peak_idx] > 0 else 0.0
         else:
             breathing_rate_bpm = 0.0
             kde_concentration = 0.0
