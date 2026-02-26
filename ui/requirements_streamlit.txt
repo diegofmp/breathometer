@@ -1,0 +1,13 @@
+# Streamlit Web UI Requirements
+streamlit>=1.28.0,<1.31.0
+streamlit-drawable-canvas==0.9.3
+matplotlib>=3.7.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+pyyaml>=6.0
+pillow>=9.0.0
+
+# Core pipeline dependencies (from your main requirements)
+scipy>=1.10.0
+scikit-learn>=1.3.0
+pandas>=2.0.0
