@@ -73,17 +73,9 @@ dmypy.json
 # Data files
 *.csv
 *.json
-data/baseline/*
-data/results/*
 data/videos/*
-!data/baseline/.gitkeep
-!data/results/.gitkeep
 !data/videos/.gitkeep
 !configs/*.json
-
-# Debug outputs
-debug/results/
-
 
 # OS-specific
 .DS_Store
@@ -105,7 +97,6 @@ tmp/
 temp/
 *.tmp
 rois/eval_v2/
-diagnostics
 
 # Output folder - keep structure but ignore contents
 output/*

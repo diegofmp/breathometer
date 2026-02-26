@@ -54,8 +54,14 @@ breathometer/
 │   ├── requirements_streamlit.txt
 │   └── README.md              # UI documentation
 ├── scripts/                   # Evaluation and analysis scripts
+├── models/                    # Pre-trained models (bird detector)
+│   └── README.md              # Model setup instructions
 ├── data/                      # Video datasets and ground truth
-├── notebooks/                 # Jupyter notebooks for analysis
+├── docs/                      # Documentation
+│   ├── DOCKER.md              # Docker usage guide
+│   └── CONFIG_REFERENCE.md    # Configuration parameters reference
+├── Dockerfile                 # Docker image definition
+├── docker-compose.yml         # Docker Compose configuration
 ├── process_single_video.py    # Single video processing script
 ├── batch_process_videos.py    # Batch video processing script
 ├── environment.yml            # Conda environment specification
