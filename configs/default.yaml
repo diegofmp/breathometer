@@ -28,43 +28,13 @@ segmentation:
 
 # Chest Localization
 localization:
-  method: 'custom'  # Options: simple, contour, motion, variance, optical_flow, custom
+  # Frame preprocessing
+  smooth_kernel_size: 21  # Kernel size for Gaussian smoothing of frames
 
-  debug: false
-  debug_plots: false
-
-  smooth_kernel_size: 21 # Kernel size of Gaussian smoothing of frames
-
+  # Pipeline buffer configuration (used by pipeline, not localizer directly)
   custom_localizer:
-    use_hull_mask: false
-    priorize_energy: false # Force to avoid hands even if loosing some energy
-    hard_constrain_mode: "energy" # What to focus on when shrinking ROI: ener
-    buffer_frames: 30   # Frames to collect for motion energy analysis
-    hand_mask_buffer_frames: 15 # Frames to collect to aggregate hand mask
-
-  # ROI Size Configuration (applies to all methods)
-  roi_size:
-    width_ratio: 0.90    # ROI width as fraction of bird width (0.70 = 70%)
-    height_ratio: 0.70   # ROI height as fraction of bird height (0.55 = 55%)
-    min_width: 20        # Minimum ROI width in pixels
-    min_height: 10       # Minimum ROI height in pixels
-
-  segmentation_enhancement:
-    hsv_hue_min: 0
-    hsv_hue_max: 20
-    hsv_sat_min: 20
-    hsv_val_min: 70
-    ycrcb_cr_min: 133
-    ycrcb_cr_max: 173
-    ycrcb_cb_min: 77
-    ycrcb_cb_max: 127
-
-  # Motion-based settings (for 'motion' and 'optical_flow' methods)
-  motion:
-    buffer_frames: 30   # 0.5 seconds at 30fps (reduced from 60 for speed)
-    grid_size: 8        # Divide bird into NxN grid
-    roi_cells: 6        # ROI spans this many grid cells (3x3 = 60% of 5x5 grid)
-    freq_range: [0.5, 4.0]  # Hz (30-240 BPM) - for optical_flow method
+    buffer_frames: 30  # Total frames buffered by pipeline for processing
+    hand_mask_buffer_frames: 20  # Frames used for hand/bird mask detection
 
 # Tracking
 tracking:

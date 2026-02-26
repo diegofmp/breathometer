@@ -5,7 +5,7 @@ Chest localization methods
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 import cv2
-from .utils import clip_to_mask_smart, plot_matrices
+from .utils import clip_to_mask_smart
 import numpy as np
 from typing import Deque
 
@@ -42,71 +42,22 @@ class CustomRobustLocalizer(BaseLocalizer):
     def __init__(self, config: dict):
         super().__init__(config)
 
-        # Get variance-specific settings
-        self.debug = config.get('debug', False) # add tons of prints
-        self.debug_plots = config.get('debug_plots', False)# Show intermediate plots
+        # Frame preprocessing
         self.smooth_kernel_size = config.get('smooth_kernel_size', 21)
 
-
-        custom_localizer_config = config.get('custom_localizer', {})
-        print("custom_localizer_config: ", custom_localizer_config)
-
-        self.use_hull_mask = custom_localizer_config.get('use_hull_mask', False)
-        self.priorize_energy = custom_localizer_config.get('priorize_energy', False) # Force to avoid hands even if loosing some energy
-        self.buffer_size = custom_localizer_config.get('buffer_frames', 30)
-
-        # Hand mask buffer size - smaller to avoid over-accumulating hand movement
-        # Default to 1/3 of frame buffer to balance coverage vs. precision
-        self.hand_mask_buffer_size = custom_localizer_config.get('hand_mask_buffer_frames', self.buffer_size // 3)
-
-        # Get ROI size constraints
-        roi_size = config.get('roi_size', {})
-        self.min_width = roi_size.get('min_width', 30)
-        self.min_height = roi_size.get('min_height', 30)
-
-        # Get tracking start frame (wait for camera stabilization)
-        tracking_config = config.get('tracking', {})
-        self.start_frame = tracking_config.get('start_frame', 0)
-
-        self.start_frame = config.get('start_frame', 200)
-
-
+        # Working buffers
         self.frame_buffer = []
-        self.hand_mask_buffer = []  # Buffer to accumulate hand masks over time
 
-        self.frames_rgb = []
-
-        # Get reference shape FROM HAND MASK
-        self.by = None
+        # Frame coordinates (set during locate())
         self.bx = None
+        self.by = None
         self.bw = None
         self.bh = None
 
+        # Hand mask (set during locate())
+        self.hand_mask_resized = None
 
-        # Post segmentation refinement params
-        post_segmentation_config = config.get('segmentation_enhancement', {})
-        self.hsv_hue_min = post_segmentation_config.get('hsv_hue_min', 0)
-        self.hsv_hue_max = post_segmentation_config.get('hsv_hue_max', 20)
-        self.hsv_sat_min = post_segmentation_config.get('hsv_sat_min', 20)
-        self.hsv_val_min = post_segmentation_config.get('hsv_val_min', 70)
-        self.ycrcb_cr_min = post_segmentation_config.get('ycrcb_cr_min', 133)
-        self.ycrcb_cr_max = post_segmentation_config.get('ycrcb_cr_max', 173)
-        self.ycrcb_cb_min = post_segmentation_config.get('ycrcb_cb_min', 77)
-        self.ycrcb_cb_max = post_segmentation_config.get('ycrcb_cb_max', 127)
-
-        self.hand_mask_resized = None # Main hand mask to use accross localization
-        self.hand_mask_tuned = None # Main hand mask -processed- in ORIGINAL SIZE
-
-
-        self.reference_bbox = None  # Store first bbox to ensure consistent frame sizes
-        self.reference_shape = None  # Store expected frame shape (h, w)
-        self.frame_count = 0  # Track current frame number
-
-        print(f"✓ CustomRobustLocalizer initialized (buffer={self.buffer_size}, "
-              f"hand_mask_buffer={self.hand_mask_buffer_size}, "
-              f"use_hull_mask={self.use_hull_mask}, "
-              f"priorize_energy={self.priorize_energy}, "
-              f"start_frame={self.start_frame})")
+        print(f"✓ CustomRobustLocalizer initialized (smooth_kernel={self.smooth_kernel_size})")
 
     def locate(self, frame_buffer: Deque[np.ndarray], hand_mask, bird_mask):
         return self.locate_w_bird_mask(frame_buffer, hand_mask, bird_mask)
@@ -146,63 +97,47 @@ class CustomRobustLocalizer(BaseLocalizer):
         """
         # Locates using given MASK (consider it already pre-processed and reliable)
 
-        # bird mask MUST BE VALID and reliable!!!!!!!!!
+        # bird mask must be valid and reliable!
         assert bird_mask is not None
         assert np.sum(bird_mask) > 0
 
-
-        if self.debug_plots:
-            print("---- hand mask buffers: ", len(self.hand_mask_buffer))
-            if len(self.hand_mask_buffer)>0:
-                plot_matrices([
-                    (self.hand_mask_buffer[-1].mask, "self.hand_mask_buffer[-1]"),
-                ])
-
-        # 0. Store masks at full size (no cropping/reshaping)
+        # 0. Store masks and setup frame coordinates
         h_full, w_full = bird_mask.shape
 
-        # No offset - working in full frame coordinates
+        # Working in full frame coordinates (no cropping/offset)
         self.bx = 0
         self.by = 0
         self.bw = w_full
         self.bh = h_full
+        self.hand_mask_resized = hand_mask
 
-        self.hand_mask_resized = hand_mask  # Keep full size
-        self.hand_mask_tuned = hand_mask    # FULL SIZE
-        self.bird_mask = bird_mask          # FULL SIZE
-
+        # Preprocess frame buffer
         self.frame_buffer = list(frame_buffer)
-
-        # Preprocess frame buffer (frames are already full size)
         self._preprocess_buffer()
 
+        # Convert bird mask to binary float
         bird_binary = (bird_mask.astype(np.uint8) > 0).astype(np.float32)
 
-        # Initialize core boundaries to full frame
-        frame_h, frame_w = self.hand_mask_resized.shape
+        # Initialize search boundaries to full frame
         core_left   = 0
-        core_right  = frame_w - 1
+        core_right  = w_full - 1
         core_top    = 0
-        core_bottom = frame_h - 1
+        core_bottom = h_full - 1
 
-        # Safety mask: areas to avoid (inverse of bird mask)
+        # Safety mask: inverse of bird mask (areas to avoid)
         safety_mask = 1 - bird_binary
 
-        # Find largest rectangle within bird mask that avoids hand regions
+        # Find largest rectangle within bird mask
         core_left, core_right, core_top, core_bottom = clip_to_mask_smart(
             safety_mask,
             core_left, core_right, core_top, core_bottom
         )
 
-       
-        final_left = core_left
-        final_right = core_right
-        final_top = core_top
-        final_bottom = core_bottom
-        final_bw = final_right - final_left
-        final_bh = final_bottom - final_top
+        # Convert to (x, y, w, h) format
+        roi_w = core_right - core_left
+        roi_h = core_bottom - core_top
 
-        return (final_left, final_top, final_bw, final_bh)
+        return (core_left, core_top, roi_w, roi_h)
 
 def get_localizer(config: dict) -> BaseLocalizer:
     """
@@ -212,13 +147,6 @@ def get_localizer(config: dict) -> BaseLocalizer:
         config: Configuration dictionary
 
     Returns:
-        Localizer instance
+        CustomRobustLocalizer instance
     """
-    method = config.get('method', 'simple')
-
-
-    if method == 'custom':
-        return CustomRobustLocalizer(config)
-    else:
-        print(f"⚠ Unknown localization method '{method}', defaulting to 'custom'")
-        return CustomRobustLocalizer(config)
+    return CustomRobustLocalizer(config)
