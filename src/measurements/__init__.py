@@ -9,14 +9,17 @@ import pandas as pd
 
 class OpticalFlowDivergenceRobustMeasurement:
     """
-    Robust breathing measurement using optical flow divergence.
+    Robust breathing measurement using optical flow radial projection.
 
     Pipeline:
     1. Dense optical flow (Farnebäck)
-    2. Remove dominant rigid motion (median translation)
-    3. Compute divergence (strain) of residual flow
+    2. Remove dominant rigid motion (affine or median translation)
+    3. Compute radial projection (expansion/contraction) of residual flow
     4. Validate radial consistency (optional, rejects hand movements)
-    5. Aggregate divergence globally or patch-wise (optional)
+    5. Aggregate signal globally or patch-wise (optional)
+
+    Radial projection detects breathing motion as expansion/contraction
+    from a center point (either energy-weighted or geometric center).
 
     Patch-wise mode increases robustness against local disturbances
     (e.g. fingers, feathers, partial occlusion).
@@ -30,8 +33,7 @@ class OpticalFlowDivergenceRobustMeasurement:
         self.prev_chest = None
         self.last_valid_breathing = 0.0  # For fallback when motion is rejected
 
-        # Mode Selection
-        self.use_radial = config.get('use_radial', True)  # Toggle here
+        # Center calculation method
         self.center_type = config.get('center_method', "energy_center")
 
         # Optical flow parameters
@@ -111,9 +113,7 @@ class OpticalFlowDivergenceRobustMeasurement:
             if self.prev_chest is None:
                 print("self.prev_chest is None")
             else:
-                print("self.prev_chest.shape: ", self.prev_chest.shape)
-                print("chest_region.shape: ", chest_region.shape)
-                print("inconsistent prev and new chest regions!!!")
+                print(f"inconsistent prev and new chest regions!!!: prev_chest.shape ({self.prev_chest.shape}) != chest_region.shape ({chest_region.shape})")
 
             self.prev_chest = chest_region.copy()
             return 0.0, metadata
@@ -140,41 +140,33 @@ class OpticalFlowDivergenceRobustMeasurement:
             u_x_res = u_x - np.median(u_x)
             u_y_res = u_y - np.median(u_y)
 
-        # 3. Generate Signal Map based on mode
-        if self.use_radial:
-            # Radial Projection (Expansion/Contraction)
-            h, w = u_x.shape
-            y, x = np.indices((h, w))
+        # 3. Generate Signal Map using Radial Projection (Expansion/Contraction)
+        h, w = u_x.shape
+        y, x = np.indices((h, w))
 
-            # Center calculations
-            # --- ENERGY CENTER CALCULATION ---
-            if self.center_type=="energy_center":
-                #print("USING ENERGY CENTER!")
-                # Calculate magnitude of motion to find the "active" center
-                mag = np.sqrt(u_x_res**2 + u_y_res**2)
-                total_mag = np.sum(mag)
-                
-                if total_mag > 1e-6:
-                    # Weighted center of motion (Energy Center)
-                    center_x = np.sum(x * mag) / total_mag
-                    center_y = np.sum(y * mag) / total_mag
-                else:
-                    # Fallback to geometric center if no motion detected
-                    center_x, center_y = (w - 1) / 2.0, (h - 1) / 2.0
+        # Center calculations
+        # --- ENERGY CENTER CALCULATION ---
+        if self.center_type=="energy_center":
+            # Calculate magnitude of motion to find the "active" center
+            mag = np.sqrt(u_x_res**2 + u_y_res**2)
+            total_mag = np.sum(mag)
+
+            if total_mag > 1e-6:
+                # Weighted center of motion (Energy Center)
+                center_x = np.sum(x * mag) / total_mag
+                center_y = np.sum(y * mag) / total_mag
             else:
-                #print("USING GEOMETRIC CENTER!")
+                # Fallback to geometric center if no motion detected
                 center_x, center_y = (w - 1) / 2.0, (h - 1) / 2.0
-
-            rel_x, rel_y = x - center_x, y - center_y
-            dist = np.sqrt(rel_x**2 + rel_y**2) + 1e-9
-            unit_rx, unit_ry = rel_x / dist, rel_y / dist
-
-            signal_map = (u_x_res * unit_rx) + (u_y_res * unit_ry)
         else:
-            # Cartesian Divergence (Strain)
-            du_x_dx = np.gradient(u_x_res, axis=1)
-            du_y_dy = np.gradient(u_y_res, axis=0)
-            signal_map = du_x_dx + du_y_dy
+            #print("USING GEOMETRIC CENTER!")
+            center_x, center_y = (w - 1) / 2.0, (h - 1) / 2.0
+
+        rel_x, rel_y = x - center_x, y - center_y
+        dist = np.sqrt(rel_x**2 + rel_y**2) + 1e-9
+        unit_rx, unit_ry = rel_x / dist, rel_y / dist
+
+        signal_map = (u_x_res * unit_rx) + (u_y_res * unit_ry)
 
         # 4. Patch-wise Aggregation
         if not self.use_patches:
@@ -195,7 +187,6 @@ class OpticalFlowDivergenceRobustMeasurement:
             # Robust consensus: the median value across all patches
             breathing = np.median(patch_values) if patch_values else 0.0
 
-            ###### 02.22############################
             # 1. Convert to absolute values to find the "loudest" patches
             # We use absolute because breathing is an oscillation (+/-)
             abs_values = np.abs(patch_values)
@@ -205,7 +196,6 @@ class OpticalFlowDivergenceRobustMeasurement:
             
             # 3. Average those top 3 (original values, not absolute)
             breathing = np.mean([patch_values[i] for i in top_indices])
-            ##########################################
 
         # 5. Radial consistency validation (optional)
         # Rejects non-breathing motion artifacts (hand movements, repositioning)
@@ -249,7 +239,6 @@ class OpticalFlowDivergenceRobustMeasurement:
             }
 
         self.prev_chest = chest_region.copy()
-        #print("Updated self.prev_chest.shape: ", self.prev_chest.shape)
         return float(breathing), metadata
     
     def post_processing(self, raw_signal):
@@ -290,7 +279,7 @@ def get_measurement(config: dict):
     Returns:
         Measurement instance
     """
-    method = config.get('method', 'intensity')
+    method = config.get('method', 'optical_flow_divergence_robust')
 
     if method == 'optical_flow_divergence_robust':
         return OpticalFlowDivergenceRobustMeasurement(config)
