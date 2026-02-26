@@ -7,12 +7,7 @@ roi_localization:
   # Auto mode settings (only used when mode='auto')
   buffer_frames: 30  # Total frames buffered for mask aggregation
   hand_mask_buffer_frames: 15  # Frames used for hand/bird mask detection
-
-  hand_detector: {}
-    # Uses auto-downloaded RF-DETR medium pretrained model
-    # To use custom model, specify: model_path: "path/to/custom_hand_model.pth"
-    # All other parameters use defaults (RF-DETR medium, confidence 0.3)
-
+ 
   bird_detector:
     model_path: "models/bird_detector.pth"
     # Custom-trained bird detector (required - must be obtained from coordinator)
@@ -21,5 +16,5 @@ roi_localization:
 # Tracking
 tracking:
   redetect_interval: 0    # Frames between re-detection (0 = disabled)
-  start_frame: 300        # Frame to start processing (skip initial stabilization)
-  max_frames: 900        # Maximum frames to process (null = all)
+  start_frame: 300        # Frame to start processing (skip initial stabilization) ~10s
+  max_frames: 1800        # Maximum frames to process (null = all) ~60s
