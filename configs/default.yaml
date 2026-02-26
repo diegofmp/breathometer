@@ -2,34 +2,24 @@
 
 # Detection
 detection:
-  mode: 'rfdetr'  # Options: manual (prompt manual ROI); or using automatic segmentators:  'auto' (YOLO), 'rfdetr'
+  mode: 'rfdetr'  # Options: 'manual' (prompt manual ROI) or 'rfdetr' (automatic detection)
 
-  # YOLO detection settings (used when mode='auto')
-  # When mode='rfdetr', set model to the RF-DETR weights path (e.g. 'rfdetr-base.pt')
-  #model: 'yolov8n-seg.pt'  # Options: yolov8n, yolov8s, yolov8m, yolov8l, yolov8x
-  #model: 'rfdetr-base.pt'  # Options: yolov8n, yolov8s, yolov8m, yolov8l, yolov8x
-  
   confidence_threshold: 0.3
   device: 'auto'  # auto, cpu, cuda
 
-  # RF-DETR detection settings (used when mode='rfdetr')
-  # 'model', 'confidence_threshold', and 'device' above are also used by RF-DETR
+  # RF-DETR detection settings
   rfdetr_variant: 'medium'  # Options: nano, small, medium, large, xlarge
   target_class: 'hand'
 
 # Segmentation
 segmentation:
   enabled: false  # Set to false to skip bird segmentation and use hand mask directly for chest localization
-  method: 'DL'  # Options: color, grabcut, skin_inverse, dl - if DL, gonna use a MODEL
+  method: 'DL'  # Deep learning-based segmentation using RF-DETR
   rely_segmentator: true # whether to rely only on the bird masks or use hand mask to clean it
 
-  #DL PARAMS
-  #mode: 'yolo'  # Options: auto, manual, rfdetr
   mode: 'rfdetr'
-  model: "/home/diego/Documents/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"  # Options: yolov8n, yolov8s, yolov8m, yolov8l, yolov8x
-
-  #detr uses model_path. yolo just "model"
-  model_path: "/home/diego/Documents/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"  # Options: yolov8n, yolov8s, yolov8m, yolov8l, yolov8x
+  model: "/home/diego/Documents/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"
+  model_path: "/home/diego/Documents/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"
   target_class: 'bird'
 
 

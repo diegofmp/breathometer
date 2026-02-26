@@ -28,9 +28,8 @@ class RFDETRDetector(BaseDetector):
     """
     Universal RF-DETR detector (Real-time Detection Transformer).
 
-    Uses the rfdetr package segmentation model. Results are converted to the
-    same interface as YOLODetector: bbox in corner (x, y, w, h) format, binary
-    uint8 mask, and a confidence score in [0, 1].
+    Uses the rfdetr package segmentation model. Results are in bbox corner
+    (x, y, w, h) format, binary uint8 mask, and a confidence score in [0, 1].
 
     Supports both pre-trained models and custom fine-tuned models.
     Can detect different classes based on configuration.
@@ -55,7 +54,7 @@ class RFDETRDetector(BaseDetector):
 
         super().__init__(config)
 
-        # Device selection — mirrors YOLODetector exactly
+        # Device selection
         device = config.get('device', 'auto')
         if device == 'auto':
             if _TORCH_AVAILABLE:

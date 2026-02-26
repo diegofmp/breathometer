@@ -38,5 +38,4 @@ dependencies:
   # Pip packages
   - pip>=23.0
   - pip:
-    - ultralytics>=8.0.0  # YOLO v8
     - opencv-contrib-python>=4.8.0

@@ -382,7 +382,7 @@ class BreathingAnalyzer:
                 # --- Hand detection (RF-DETR) ---
                 hand_bbox, confidence, hand_mask = self.detector.detect(frame)
 
-                # --- Bird detection (fine-tuned YOLO) ---
+                # --- Bird detection (RF-DETR) ---
                 bird_bbox, _, pred_bird_mask = self.bird_detector.detect(frame)
 
                 if hand_bbox is None or hand_mask is None:
@@ -462,11 +462,11 @@ class BreathingAnalyzer:
                     cv2.rectangle(vis, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
                     cv2.putText(vis, f"bird {bird.confidence:.2f}", (bx, by - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    
+
                     plt.figure(figsize=(15, 5))
                     plt.subplot(1, 2, 1)
                     plt.imshow(cv2.cvtColor(vis, cv2.COLOR_BGR2RGB))
-                    plt.title(f"Frame {idx} - Bird Detection (YOLO FT) - conf: B: {bird.confidence:.2f} H: {hand.confidence:.2f}")
+                    plt.title(f"Frame {idx} - Bird Detection (RF-DETR) - conf: B: {bird.confidence:.2f} H: {hand.confidence:.2f}")
                     plt.axis('off')
 
         if not detected_hands:
@@ -507,7 +507,7 @@ class BreathingAnalyzer:
         Steps:
             1. Validate that the frame buffer contains at least
                `buffer_frames_size` frames.
-            2. Run hand (RF-DETR) and bird (YOLO) detection over the buffer
+            2. Run hand (RF-DETR) and bird (RF-DETR) detection over the buffer
                via `_get_masks`, returning per-frame `Segment` lists.
             3. Aggregate the per-frame masks via `_aggregate_masks`:
                - Applies a distance-based dynamic threshold to separate hand

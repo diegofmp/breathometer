@@ -3,7 +3,6 @@ Hand detectors module
 """
 
 from .base_detector import BaseDetector
-from .yolo_detector import YOLODetector
 from .manual_detector import ManualDetector
 
 # Optional: RF-DETR detector (requires 'rfdetr' package)
@@ -14,7 +13,7 @@ except ImportError:
     _RFDETR_DETECTOR_AVAILABLE = False
     RFDETRDetector = None  # type: ignore
 
-__all__ = ['BaseDetector', 'YOLODetector', 'ManualDetector', 'RFDETRDetector',]
+__all__ = ['BaseDetector', 'ManualDetector', 'RFDETRDetector',]
 
 def get_detector(config: dict) -> BaseDetector:
     """
@@ -26,7 +25,7 @@ def get_detector(config: dict) -> BaseDetector:
     Returns:
         Detector instance
     """
-    mode = config.get('mode', 'auto')
+    mode = config.get('mode', 'rfdetr')
 
     if mode == 'manual':
         return ManualDetector(config)
@@ -38,5 +37,7 @@ def get_detector(config: dict) -> BaseDetector:
             )
         return RFDETRDetector(config)
     else:
-        # Default: automatic detection with YOLO
-        return YOLODetector(config)
+        raise ValueError(
+            f"Unknown detection mode: '{mode}'. "
+            f"Supported modes: 'manual', 'rfdetr'"
+        )
