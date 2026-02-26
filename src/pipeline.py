@@ -45,18 +45,43 @@ class BreathingAnalyzer:
         print("BIRD BREATHING ANALYZER")
         print("="*60)
 
-        # Initialize components
-        self.detector = get_detector(self.config['detection']) # un Auto mode: HAND detector. Manual: acts directly as CHEST "detector"
-        self.bird_detector = get_detector(self.config['segmentation']) # TODO double check naming on config file
-        self.rely_segmentator = self.config['segmentation'].get('rely_segmentator', False)
-
-        # Check detection mode
-        self.detection_mode = self.config['detection'].get('mode', 'auto')
+        # Initialize ROI localization components
+        roi_config = self.config.get('roi_localization', {})
+        self.detection_mode = roi_config.get('mode', 'auto')
         self.manual_mode = (self.detection_mode == 'manual')
 
-        #buffers config
-        self.buffer_frames_size = self.config["localization"]['custom_localizer'].get('buffer_frames', 30)
-        self.buffer_frames_for_masks = self.config["localization"]['custom_localizer'].get('hand_mask_buffer_frames', 20)
+        # Initialize hand detector (for hand detection or manual ROI selection)
+        if self.manual_mode:
+            hand_config = {'mode': 'manual'}
+            # Pass manual_roi if provided in roi_localization config
+            if 'manual_roi' in roi_config:
+                hand_config['manual_roi'] = roi_config['manual_roi']
+        else:
+            hand_config = (roi_config.get('hand_detector') or {}).copy()
+            hand_config['mode'] = 'rfdetr'
+            hand_config.setdefault('target_class', 'hand')
+            hand_config.setdefault('confidence_threshold', 0.3)
+            hand_config.setdefault('device', 'auto')
+            hand_config.setdefault('rfdetr_variant', 'medium')
+
+        self.detector = get_detector(hand_config)
+
+        # Initialize bird detector (only in auto mode)
+        if not self.manual_mode:
+            bird_config = (roi_config.get('bird_detector') or {}).copy()
+            bird_config['mode'] = 'rfdetr'
+            bird_config.setdefault('target_class', 'bird')
+            bird_config.setdefault('confidence_threshold', 0.2)
+            bird_config.setdefault('device', 'auto')
+            self.bird_detector = get_detector(bird_config)
+            self.rely_segmentator = bird_config.get('rely_segmentator', False)
+        else:
+            self.bird_detector = None
+            self.rely_segmentator = False
+
+        # Buffer config (for mask aggregation in auto mode)
+        self.buffer_frames_size = roi_config.get('buffer_frames', 30)
+        self.buffer_frames_for_masks = roi_config.get('hand_mask_buffer_frames', 15)
         self.debug_plots=False
 
         # Skip segmentation and localization in manual mode
@@ -67,7 +92,9 @@ class BreathingAnalyzer:
             print("⚙ MANUAL MODE: User will select chest ROI directly")
             print("⚠ Skipping: hand detection, bird segmentation, chest localization")
         else:
-            self.localizer = get_localizer(self.config['localization'])
+            # Initialize chest localizer (uses hidden params like smooth_kernel_size)
+            localizer_config = self.config.get('localization', {})
+            self.localizer = get_localizer(localizer_config)
         self.measurement = get_measurement(self.config.get('measurement', {}))
         self.signal_processor = SignalProcessor(self.config.get('signal_processing', {}))
 

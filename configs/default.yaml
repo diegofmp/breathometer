@@ -1,20 +1,20 @@
 # Bird Breathing Analysis - Configuration
 
-# Detection
-detection:
-  mode: 'rfdetr'  # Options: 'manual' (prompt manual ROI) or 'rfdetr' (automatic detection)
+# ROI Localization (chest detection)
+roi_localization:
+  mode: 'auto'  # Options: 'auto' (use detectors) or 'manual' (user selects ROI)
 
-# Segmentation
-segmentation:
-  target_class: 'bird'
-  model: "/media/diego/AE8D-4E3F/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"
-  model_path: "/media/diego/AE8D-4E3F/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"
+  # Auto mode settings (only used when mode='auto')
+  buffer_frames: 30  # Total frames buffered for mask aggregation
+  hand_mask_buffer_frames: 15  # Frames used for hand/bird mask detection
 
-# Chest Localization
-localization:
-  custom_localizer:
-    buffer_frames: 30  # Total frames buffered by pipeline for processing
-    hand_mask_buffer_frames: 15  # Frames used for hand/bird mask detection
+  hand_detector: {}
+    # All parameters use defaults (RF-DETR medium, confidence 0.3)
+    # model_path: Optional custom hand detector model path (.pth)
+
+  bird_detector:
+    model_path: "/media/diego/AE8D-4E3F/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"
+    # All other parameters use defaults (RF-DETR, confidence 0.2)
 
 # Tracking
 tracking:

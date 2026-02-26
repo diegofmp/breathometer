@@ -539,7 +539,6 @@ def main():
     config_path = configs_dir / selected_config
 
     # Option to save output video (only for single video tab)
-    save_video = st.sidebar.checkbox("Save processed video", value=False)
 
     # TAB 1: Single Video Processing
     with tab1:
@@ -565,7 +564,7 @@ def main():
             # Check if manual mode is selected
             with open(config_path, 'r') as f:
                 current_config = yaml.safe_load(f)
-            detection_mode = current_config.get('detection', {}).get('mode', 'auto')
+            detection_mode = current_config.get('roi_localization', {}).get('mode', 'auto')
             start_frame = current_config.get('tracking', {}).get('start_frame', 0)
 
             # Manual ROI selection interface (only show if manual mode is active)
@@ -762,7 +761,7 @@ def main():
             # Check if manual mode requires ROI before enabling processing
             with open(config_path, 'r') as f:
                 current_config = yaml.safe_load(f)
-            detection_mode = current_config.get('detection', {}).get('mode', 'auto')
+            detection_mode = current_config.get('roi_localization', {}).get('mode', 'auto')
 
             # Determine if button should be disabled
             button_disabled = st.session_state.processing
@@ -796,7 +795,7 @@ def main():
                 # Check if manual mode requires ROI
                 with open(config_path, 'r') as f:
                     current_config = yaml.safe_load(f)
-                detection_mode = current_config.get('detection', {}).get('mode', 'auto')
+                detection_mode = current_config.get('roi_localization', {}).get('mode', 'auto')
 
                 # Validate ROI is provided for manual mode
                 if detection_mode == 'manual' and st.session_state.get('manual_roi') is None:
@@ -809,10 +808,6 @@ def main():
                 with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded_file.name).suffix) as tmp_input:
                     tmp_input.write(uploaded_file.read())
                     tmp_input_path = tmp_input.name
-
-                tmp_output_path = None
-                if save_video:
-                    tmp_output_path = tempfile.NamedTemporaryFile(delete=False, suffix='_processed.mp4').name
 
                 # Create containers for display
                 progress_container = st.empty()
@@ -829,8 +824,10 @@ def main():
                         with open(config_path, 'r') as f:
                             config_data = yaml.safe_load(f)
 
-                        # Inject manual_roi into detection config
-                        config_data['detection']['manual_roi'] = st.session_state.manual_roi
+                        # Inject manual_roi into roi_localization config
+                        if 'roi_localization' not in config_data:
+                            config_data['roi_localization'] = {}
+                        config_data['roi_localization']['manual_roi'] = st.session_state.manual_roi
 
                         # Save to temporary config file
                         tmp_config = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.yaml')
@@ -852,7 +849,7 @@ def main():
                     with stream_capture:
                         results = analyzer.process_video(
                             video_path=tmp_input_path,
-                            output_path=tmp_output_path
+                            output_path=None
                         )
 
                     progress_container.progress(1.0, text="Processing complete!")
@@ -864,7 +861,7 @@ def main():
                     st.session_state.results = {
                         'data': results,
                         'video_name': uploaded_file.name,
-                        'tmp_output_path': tmp_output_path if save_video and tmp_output_path and Path(tmp_output_path).exists() else None
+                        'tmp_output_path': None
                     }
                     st.session_state.processing = False
                     st.session_state.start_processing = False
@@ -901,6 +898,11 @@ def main():
                             Path(config_to_use).unlink()
                         except:
                             pass
+
+            # Display stored logs if available (after processing completes)
+            if st.session_state.processing_logs is not None:
+                with st.expander("📋 Processing Logs", expanded=False):
+                    st.text(st.session_state.processing_logs)
 
             # Display results if available
             if st.session_state.results is not None:
@@ -1003,19 +1005,6 @@ def main():
                     st.pyplot(fig)
                     plt.close(fig)
 
-                # Download processed video if available
-                if tmp_output_path and Path(tmp_output_path).exists():
-                    with open(tmp_output_path, 'rb') as f:
-                        video_bytes = f.read()
-
-                    st.download_button(
-                        label="📥 Download Processed Video",
-                        data=video_bytes,
-                        file_name=f"processed_{video_name}",
-                        mime="video/mp4",
-                        key=f"video_download_{video_name}"
-                    )
-
                 # Export results
                 import json
                 results_json = {
@@ -1067,7 +1056,7 @@ def main():
         # Check if manual mode is enabled - warn user
         with open(config_path, 'r') as f:
             current_config = yaml.safe_load(f)
-        detection_mode = current_config.get('detection', {}).get('mode', 'auto')
+        detection_mode = current_config.get('roi_localization', {}).get('mode', 'auto')
 
         if detection_mode == 'manual':
             st.warning("⚠️ **Manual detection mode is currently enabled.** Batch processing with manual mode is not supported in the UI, as each video requires its own ROI selection. Please switch to an automatic detection mode (auto/rfdetr) in your config file for batch processing.")
@@ -1326,7 +1315,8 @@ def main():
                 with stat_cols[0]:
                     mean_bpm = successful['breathing_rate_bpm'].mean()
                     std_bpm = successful['breathing_rate_bpm'].std()
-                    st.metric("Mean Breathing Rate", f"{mean_bpm:{fmt_cfg['bpm']}} BPM", delta=f"Std: {std_bpm:{fmt_cfg['bpm']}}", delta_color="off", delta_arrow="off")
+                    st.metric("Mean Breathing Rate", f"{mean_bpm:{fmt_cfg['bpm']}} BPM")
+                    st.caption(f"Std: {std_bpm:{fmt_cfg['bpm']}}")
 
                 with stat_cols[1]:
                     mean_conf = successful['confidence'].mean()

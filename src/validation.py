@@ -34,18 +34,14 @@ class RadialConsistencyValidator:
         Args:
             config: Validation configuration with optional parameters:
                 - consistency_threshold: Minimum radial consistency (default: 0.4)
-                - coherence_threshold: Minimum radial coherence (default: 0.5)
+                - coherence_threshold: Minimum radial coherence (default: 0.3)
                 - max_motion_magnitude: Maximum median motion (default: 2.0)
                 - min_motion_magnitude: Minimum total motion (default: 0.1)
-                - fallback_mode: What to return on rejection: 'zero', 'previous', 'none'
-                  (default: 'previous')
         """
         self.consistency_threshold = config.get('consistency_threshold', 0.4)
-        #self.coherence_threshold = config.get('coherence_threshold', 0.5)
         self.coherence_threshold = config.get('coherence_threshold', 0.3)
         self.max_motion_magnitude = config.get('max_motion_magnitude', 2.0)
         self.min_motion_magnitude = config.get('min_motion_magnitude', 0.1)
-        self.fallback_mode = config.get('fallback_mode', 'previous')
 
         # Statistics tracking
         self.total_frames = 0
@@ -61,7 +57,6 @@ class RadialConsistencyValidator:
         print(f"  Consistency threshold: {self.consistency_threshold}")
         print(f"  Coherence threshold: {self.coherence_threshold}")
         print(f"  Motion range: [{self.min_motion_magnitude}, {self.max_motion_magnitude}]")
-        print(f"  Fallback mode: {self.fallback_mode}")
 
     def validate(self,
                  u_x_res: np.ndarray,
