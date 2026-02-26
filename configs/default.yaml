@@ -9,11 +9,13 @@ roi_localization:
   hand_mask_buffer_frames: 15  # Frames used for hand/bird mask detection
 
   hand_detector: {}
-    # All parameters use defaults (RF-DETR medium, confidence 0.3)
-    # model_path: Optional custom hand detector model path (.pth)
+    # Uses auto-downloaded RF-DETR medium pretrained model
+    # To use custom model, specify: model_path: "path/to/custom_hand_model.pth"
+    # All other parameters use defaults (RF-DETR medium, confidence 0.3)
 
   bird_detector:
-    model_path: "/media/diego/AE8D-4E3F/breathometer/runs/train_rfdetr/rfdetr_experiment_2/checkpoint_best_regular.pth"
+    model_path: "models/bird_detector.pth"
+    # Custom-trained bird detector (required - must be obtained from coordinator)
     # All other parameters use defaults (RF-DETR, confidence 0.2)
 
 # Tracking

@@ -663,14 +663,13 @@ class BreathingAnalyzer:
             else:
                 raise Exception("Could not initialize tracker. No valid ROI found. Increase buffer size or look for a more stable start_frame")
     
-    def process_video(self, video_path: str, output_path: Optional[str] = None) -> Dict:
+    def process_video(self, video_path: str) -> Dict:
         """
         Process video and estimate breathing rate
-        
+
         Args:
             video_path: Path to video file
-            output_path: Optional path to save visualization video
-        
+
         Returns:
             results: Dictionary with breathing rate and metadata
         """
@@ -712,12 +711,6 @@ class BreathingAnalyzer:
             frames_to_process = min(self.max_frames, frames_available)
         else:
             frames_to_process = frames_available
-
-        # Setup output video if requested
-        out = None
-        if output_path:
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
         # Process frames
         if self.start_frame > 0:
@@ -815,8 +808,6 @@ class BreathingAnalyzer:
                 pbar.update(1)
         
         cap.release()
-        if out:
-            out.release()
 
         # Estimate breathing rate
         print("\nEstimating breathing rate...")

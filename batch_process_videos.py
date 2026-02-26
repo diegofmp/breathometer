@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from src.pipeline import BreathingAnalyzer
 
 
-def process_directory(directory, config_path, output_csv, output_videos_dir=None,
+def process_directory(directory, config_path, output_csv,
                      video_extensions=None, recursive=False):
     """
     Process all videos in a directory and save results to CSV
@@ -27,7 +27,6 @@ def process_directory(directory, config_path, output_csv, output_videos_dir=None
         directory: Path to directory containing videos
         config_path: Path to config file
         output_csv: Path to output CSV file (or directory, will create results.csv inside)
-        output_videos_dir: Directory to save processed videos (optional)
         video_extensions: List of video file extensions to process
         recursive: Whether to search subdirectories recursively
 
@@ -73,15 +72,11 @@ def process_directory(directory, config_path, output_csv, output_videos_dir=None
     print(f"Config: {config_path}")
     print(f"Found {len(video_files)} video(s)")
     print(f"Output CSV: {output_csv}")
-    if output_videos_dir:
-        print(f"Output videos: {output_videos_dir}")
     print("="*70)
     print()
 
     # Create output directories
     Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
-    if output_videos_dir:
-        Path(output_videos_dir).mkdir(parents=True, exist_ok=True)
 
     # Initialize analyzer once
     print("Initializing BreathingAnalyzer...")
@@ -97,15 +92,9 @@ def process_directory(directory, config_path, output_csv, output_videos_dir=None
         print("-" * 70)
 
         try:
-            # Determine output video path if requested
-            output_video_path = None
-            if output_videos_dir:
-                output_video_path = Path(output_videos_dir) / f"processed_{video_path.name}"
-
             # Process video
             results = analyzer.process_video(
-                video_path=str(video_path),
-                output_path=str(output_video_path) if output_video_path else None
+                video_path=str(video_path)
             )
 
             # Extract key metrics
@@ -225,15 +214,15 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process all videos in a directory
-  python batch_process_videos.py --directory data/videos --output results.csv
+  # Process all videos in a directory (saves to output/results.csv by default)
+  python batch_process_videos.py --directory data/videos
 
-  # Process with custom config and save processed videos
+  # Process with custom config and output path
   python batch_process_videos.py --directory data/videos --config configs/default.yaml \\
-      --output results.csv --output-videos processed_videos/
+      --output output/my_results.csv
 
   # Process recursively (include subdirectories)
-  python batch_process_videos.py --directory data/ --output results.csv --recursive
+  python batch_process_videos.py --directory data/ --recursive
         """
     )
 
@@ -242,10 +231,8 @@ Examples:
     parser.add_argument('--config', type=str,
                        default='configs/default.yaml',
                        help='Path to config file (default: configs/default.yaml)')
-    parser.add_argument('--output', type=str, required=True,
-                       help='Path to output CSV file')
-    parser.add_argument('--output-videos', type=str, default=None,
-                       help='Directory to save processed videos (optional)')
+    parser.add_argument('--output', type=str, default='output/results.csv',
+                       help='Path to output CSV file (default: output/results.csv)')
     parser.add_argument('--recursive', action='store_true',
                        help='Search subdirectories recursively')
     parser.add_argument('--extensions', type=str, nargs='+',
@@ -268,7 +255,6 @@ Examples:
             directory=args.directory,
             config_path=str(config_path),
             output_csv=args.output,
-            output_videos_dir=args.output_videos,
             video_extensions=args.extensions,
             recursive=args.recursive
         )

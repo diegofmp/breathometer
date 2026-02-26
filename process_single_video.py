@@ -184,9 +184,6 @@ def main():
     parser.add_argument('--config', type=str,
                        default='configs/default.yaml',
                        help='Path to config file')
-    parser.add_argument('--output', type=str,
-                       default=None,
-                       help='Path to output video file (optional)')
     parser.add_argument('--plot', action='store_true',
                        help='Plot results after processing')
 
@@ -215,8 +212,6 @@ def main():
     print("="*60)
     print(f"Video: {args.video}")
     print(f"Config: {args.config}")
-    if args.output:
-        print(f"Output: {args.output}")
     print("="*60)
     print()
 
@@ -228,8 +223,7 @@ def main():
         # Process video
         print("\nProcessing video...")
         results = analyzer.process_video(
-            video_path=str(args.video),
-            output_path=args.output
+            video_path=str(args.video)
         )
 
         # Print summary
@@ -262,21 +256,11 @@ def main():
             # Extract video name from path
             video_name = Path(args.video).stem  # Gets filename without extension
 
-            # Determine output path for plot
-            if args.output:
-                output_path = Path(args.output)
-                # Check if it's a directory or file path
-                if output_path.is_dir() or str(args.output).endswith('/'):
-                    output_dir = output_path
-                else:
-                    output_dir = output_path.parent
+            # Create output directory if it doesn't exist
+            output_dir = Path("output")
+            output_dir.mkdir(parents=True, exist_ok=True)
 
-                # Create directory if it doesn't exist
-                output_dir.mkdir(parents=True, exist_ok=True)
-                plot_path = output_dir / f"{video_name}_pipeline_results.png"
-            else:
-                plot_path = Path(f"{video_name}_pipeline_results.png")
-
+            plot_path = output_dir / f"{video_name}_pipeline_results.png"
             plot_results(results, str(plot_path))
 
         return 0

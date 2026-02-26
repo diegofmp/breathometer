@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  breathometer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: breathometer
+    ports:
+      - "8501:8501"
+    volumes:
+      # Mount data directory for input videos
+      - ./data:/app/data
+      # Mount output directory for results
+      - ./output:/app/output
+      # Mount configs directory (read-only to prevent accidental changes)
+      - ./configs:/app/configs:ro
+      # Mount models directory for pre-trained models (read-only)
+      - ./models:/app/models:ro
+    environment:
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+      # Uncomment to use GPU (requires nvidia-docker)
+      # - CUDA_VISIBLE_DEVICES=0
+    restart: unless-stopped
+
+    # Uncomment to enable GPU support (requires nvidia-docker runtime)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# Example: Run batch processing instead of UI (output defaults to /app/output/results.csv)
+# docker-compose run --rm breathometer python batch_process_videos.py --directory /app/data
+
+# Example: Run single video processing with plot (saves to /app/output/)
+# docker-compose run --rm breathometer python process_single_video.py --video /app/data/videos/video.mp4 --config configs/default.yaml --plot

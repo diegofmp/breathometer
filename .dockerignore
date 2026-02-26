@@ -1,0 +1,122 @@
+# Docker ignore file for Breathometer
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Conda environments
+*.conda
+conda-meta/
+
+# Data and results (excluded from build, will be mounted as volumes)
+# The directory structure will be created by the application at runtime
+data/
+output/
+results/
+batch_process_results/
+analysis_results/
+diagnostics/
+
+# Video files (will be mounted as volumes)
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Large data files
+*.h5
+*.hdf5
+
+# Model files (will be mounted as volumes)
+models/
+*.pt
+*.pth
+*.onnx
+
+# Notebooks and experiments (not needed in container)
+notebooks/
+*.ipynb
+*.ipynb_checkpoints
+
+# Logs
+logs/
+*.log
+*.ss
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation (keep essential README only)
+*.md
+!README.md
+
+# Test files
+test_*.py
+*_test.py
+tests/
+
+# Optimization and analysis scripts (not needed in production)
+optimize_*.py
+analyze_*.py
+scripts/
+
+# Tuning configs (keep only essential production configs)
+configs/tuner_*.yaml
+configs/tuned_*.yaml
+configs/tunned_*.yaml
+configs/*_test.yaml
+configs/*_debug.yaml
+
+# Training code (not needed in production)
+src/training/
+src/tuning/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Docker files (no need to copy Docker configs into image)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+ui/Dockerfile
+ui/docker-compose.yml
+ui/.dockerignore
+
+# macOS
+.DS_Store
+
+# Image files (unless needed for docs)
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# Environment files
+environment.yml
+requirements*.txt
+
+# Temporary files
+*.tmp
+*.temp
+.cache/

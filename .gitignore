@@ -60,12 +60,15 @@ dmypy.json
 # Pyre
 .pyre/
 
-# Model files (heavy and auto-downloaded)
+# Model files (heavy and distributed separately)
 *.pt
 *.pth
 *.onnx
 *.pkl
 *.h5
+
+# Keep models directory structure but exclude actual model files
+!models/.gitkeep
 
 # Data files
 *.csv
@@ -103,4 +106,7 @@ temp/
 *.tmp
 rois/eval_v2/
 diagnostics
-output/
+
+# Output folder - keep structure but ignore contents
+output/*
+!output/.gitkeep

@@ -64,12 +64,33 @@ breathometer/
 
 ## Installation
 
-### Prerequisites
+### Option 1: Docker
+
+For consistent, reproducible environments and easy deployment:
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd breathometer
+
+# Build and start with Docker Compose
+docker-compose up
+```
+
+Access the web UI at [http://localhost:8501](http://localhost:8501)
+
+See [docs/DOCKER.md](docs/DOCKER.md) for comprehensive Docker usage, GPU support, batch processing, and troubleshooting.
+
+### Option 2: Conda
+
+For local development and faster iteration:
+
+#### Prerequisites
 
 - [Conda](https://docs.conda.io/en/latest/miniconda.html) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html)
 - CUDA-capable GPU (recommended, but CPU mode is supported)
 
-### Setup Environment
+#### Setup Environment
 
 1. Clone the repository:
    ```bash
@@ -87,6 +108,40 @@ breathometer/
    ```bash
    pip install -r ui/requirements_streamlit.txt
    ```
+
+### Model Setup (Required for Auto Mode)
+
+The pipeline requires two models for automatic ROI detection:
+
+#### 1. Hand Detector (Automatic)
+The hand detector model is **automatically downloaded** by the `rfdetr` package on first use. No manual setup required!
+
+#### 2. Bird Detector (Manual - Required)
+The bird detector is a **custom-trained model** that must be obtained separately (~385 MB).
+
+**Setup steps:**
+
+1. **Obtain the bird detector model** from your research coordinator:
+   - Via USB drive
+   - Via internal server (URL to be provided)
+   - From colleague's installation
+
+2. **Place the model in the `models/` directory**:
+   ```bash
+   # Copy from USB or download location
+   cp /path/to/bird_detector.pth models/
+   ```
+
+3. **Verify installation**:
+   ```bash
+   ls -lh models/
+   # Should show:
+   # bird_detector.pth (~385 MB)
+   ```
+
+See [models/README.md](models/README.md) for detailed setup instructions and troubleshooting.
+
+**Note**: If you don't have the bird detector model yet, you can use manual ROI selection mode (see Configuration section).
 
 ## Usage
 
