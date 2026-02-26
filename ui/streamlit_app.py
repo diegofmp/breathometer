@@ -39,7 +39,7 @@ from src.pipeline import BreathingAnalyzer
 
 # Load UI configuration
 UI_CONFIG_PATH = Path(__file__).parent / 'ui_config.yaml'
-with open(UI_CONFIG_PATH, 'r') as f:
+with open(UI_CONFIG_PATH, 'r', encoding="utf-8") as f:
     UI_CONFIG = yaml.safe_load(f)
 
 

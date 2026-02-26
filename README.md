@@ -111,7 +111,7 @@ For local development and faster iteration:
 2. Create and activate the conda environment:
    ```bash
    conda env create -f environment.yml
-   conda activate bird_breathing
+   conda activate breathometer
    ```
 
 3. (Optional) If using the web UI, install additional dependencies:

@@ -1,5 +1,5 @@
 # Streamlit Web UI Requirements
-streamlit>=1.30.0
+streamlit==1.40.2
 streamlit-drawable-canvas==0.9.3
 matplotlib>=3.10.0
 numpy>=2.2.0

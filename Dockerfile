@@ -6,56 +6,50 @@ FROM python:3.10-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
-# - OpenCV dependencies (libgl1, libglib, libsm, libxext, libxrender)
-# - OpenMP support (libgomp1)
-# - FFmpeg for video processing
-# - curl for healthchecks
-RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
-    libxrender-dev \
+    libxrender1 \
     libgomp1 \
     ffmpeg \
     curl \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
-COPY environment.yml .
-
-# Extract and install pip dependencies from environment.yml
-# We use pip instead of conda for smaller image size and faster builds
+# Install PyTorch from the PyTorch wheel index
 RUN pip install --no-cache-dir \
-    # Core ML/CV libraries
-    torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu \
+    torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Install remaining packages from PyPI
+RUN pip install --no-cache-dir \
     # Detection & tracking
     rfdetr==1.4.1 \
     supervision==0.27.0 \
     # Computer vision
-    opencv-contrib-python==4.13.0.90 \
     opencv-python-headless==4.10.0.84 \
+    opencv-contrib-python==4.13.0.90 \
     pillow==10.4.0 \
     # Signal processing & ML
-    scipy==1.15.3 \
     numpy==2.2.6 \
+    scipy==1.15.3 \
     scikit-learn \
     pandas==2.3.3 \
     polars==1.37.1 \
+    pyarrow==23.0.1 \
     # Streamlit UI
-    streamlit==1.30.0 \
+    streamlit==1.40.2 \
     streamlit-drawable-canvas==0.9.3 \
     plotly==6.5.2 \
     # Visualization
     matplotlib \
     seaborn \
-    # Configuration management
     pyyaml==6.0.3 \
-    pydantic==2.12.5 \
     # Utilities
-    pyarrow==23.0.1 \
+    pydantic==2.12.5 \
     tqdm
 
 # Copy the application code
